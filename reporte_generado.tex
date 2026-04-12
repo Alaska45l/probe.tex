@@ -318,7 +318,7 @@
 }
 \fancyhead[R]{%
   \small\color{AMSlate}%
-  << cliente_nombre >> \textcolor{AMBorder}{\textbullet}\ << fecha_reporte >>%
+  Taller Local Demo \textcolor{AMBorder}{\textbullet}\ 2026-04-12 19:07:44%
 }
 % Línea bajo encabezado
 \renewcommand{\headrule}{%
@@ -330,7 +330,7 @@
 % Pie: ID de reporte + paginación
 \fancyfoot[L]{%
   \scriptsize\color{AMSlate}%
-  ID:\ \texttt{<< report_id >>} \textbar\ v<< version >>%
+  ID:\ \texttt{INV-2026-001} \textbar\ v1.0.0%
 }
 \fancyfoot[C]{%
   \scriptsize\color{AMSlate}%
@@ -361,7 +361,7 @@
 
 \vspace*{1cm}
 \noindent
-{\color{AMSlate}\scriptsize\bfseries\MakeUppercase{Informe Técnico Confidencial} \hfill ID: \texttt{<< report_id >>}}\\[1ex]
+{\color{AMSlate}\scriptsize\bfseries\MakeUppercase{Informe Técnico Confidencial} \hfill ID: \texttt{INV-2026-001}}\\[1ex]
 {\color{AMPrimary}\rule{\linewidth}{1.5pt}}\\[4ex]
 
 \noindent
@@ -375,13 +375,13 @@
 \noindent
 \begin{minipage}[t]{0.5\textwidth}
   {\scriptsize\bfseries\color{AMSlate}HARDWARE OBJETIVO}\\[1ex]
-  {\Large\bfseries\color{AMPrimary}<< device_brand >>\ << device_model >>}\\[1ex]
-  {\small\color{AMSlate}S/N:\ \texttt{<< serial_number >>}}
+  {\Large\bfseries\color{AMPrimary}ASUS\ Vivobook E1504FA}\\[1ex]
+  {\small\color{AMSlate}S/N:\ \texttt{R9N0CV12M211383}}
 \end{minipage}%
 \begin{minipage}[t]{0.5\textwidth}
   {\scriptsize\bfseries\color{AMSlate}ENTORNO DE EJECUCIÓN}\\[1ex]
-  {\normalsize\bfseries\color{AMPrimary}probe\textcolor{redtex}{.tex} v<< version >>}\\[1ex]
-  {\small\color{AMSlate}Kernel Linux:\ << kernel_version >>}
+  {\normalsize\bfseries\color{AMPrimary}probe\textcolor{redtex}{.tex} v1.0.0}\\[1ex]
+  {\small\color{AMSlate}Kernel Linux:\ 6.19.10-1-cachyos}
 \end{minipage}
 
 \vspace{1.5cm}
@@ -389,15 +389,15 @@
 \noindent
 \begin{minipage}[t]{0.5\textwidth}
   {\scriptsize\bfseries\color{AMSlate}CLIENTE / PROPIETARIO}\\[1ex]
-  {\normalsize\bfseries\color{AMPrimary}<< cliente_nombre >>}\\[1ex]
-  {\small\color{AMSlate}<< cliente_email >>}\\[0.5ex]
-  {\small\color{AMSlate}<< cliente_telefono >>}
+  {\normalsize\bfseries\color{AMPrimary}Taller Local Demo}\\[1ex]
+  {\small\color{AMSlate}contacto@cliente.com}\\[0.5ex]
+  {\small\color{AMSlate}+54 223 000-0000}
 \end{minipage}%
 \begin{minipage}[t]{0.5\textwidth}
   {\scriptsize\bfseries\color{AMSlate}DIAGNÓSTICO REALIZADO POR}\\[1ex]
-  {\normalsize\bfseries\color{AMPrimary}<< taller_nombre >>}\\[1ex]
-  {\small\color{AMSlate}Técnico:\ << tecnico_nombre >>}\\[0.5ex]
-  {\small\color{AMSlate}Fecha:\ << fecha_reporte >>}
+  {\normalsize\bfseries\color{AMPrimary}Invariant Systems}\\[1ex]
+  {\small\color{AMSlate}Técnico:\ Admin}\\[0.5ex]
+  {\small\color{AMSlate}Fecha:\ 2026-04-12 19:07:44}
 \end{minipage}
 
 \vspace*{\fill}
@@ -414,14 +414,14 @@
     \begin{minipage}[c]{0.65\textwidth}
       \small\color{AMText}
       \textbf{\color{AMPrimary}ANÁLISIS ESTRUCTURAL Y TERMODINÁMICO}\\[8pt]
-      \textbf{Estado:}\ << estado_global_badge >>\\[6pt]
-      \scriptsize\color{AMSlate}<< resumen_ejecutivo >>
+      \textbf{Estado:}\ \badgewarn\\[6pt]
+      \scriptsize\color{AMSlate}Degradación física activa detectada en uno o más subsistemas. El hardware opera fuera de su especificación óptima. Se requiere intervención técnica en el próximo ciclo de mantenimiento.
     \end{minipage}%
     \hfill
     \begin{minipage}[c]{0.30\textwidth}
       \raggedleft
       {\scriptsize\bfseries\color{AMSlate}ÍNDICE DE ANOMALÍA ($\Delta A$)}\\[4pt]
-      {\fontsize{32}{36}\selectfont\bfseries\color{AMPrimary}<< indice_anomalia >>}
+      {\fontsize{32}{36}\selectfont\bfseries\color{AMPrimary}20}
     \end{minipage}
   };
 \end{tikzpicture}
@@ -454,10 +454,10 @@
 
 \begin{componentinfo}
   \small
-  \textbf{Modelo:}\ \mv{<< cpu_model >>}\hfill
-  \textbf{Núcleos/Hilos:}\ \mv{<< cpu_cores >>/<< cpu_threads >>}\hfill
-  \textbf{TDP:}\ \mv{<< cpu_tdp >>\ W}\hfill
-  \textbf{Socket:}\ << cpu_socket >>
+  \textbf{Modelo:}\ \mv{AMD Ryzen 3 7320U with Radeon Graphics}\hfill
+  \textbf{Núcleos/Hilos:}\ \mv{4/8}\hfill
+  \textbf{TDP:}\ \mv{0\ W}\hfill
+  \textbf{Socket:}\ FT6
 \end{componentinfo}
 
 \vspace{0.5cm}
@@ -483,7 +483,7 @@
     ymin=30, ymax=105,
     xtick distance=20,
     ytick distance=10,
-    extra y ticks      = {<< cpu_t_idle_plus5 >>},
+    extra y ticks      = {68.6},
     extra y tick labels = {\empty}, % <--- SILENCIAMOS EL TEXTO EXTERNO
     extra y tick style  = {
       grid       = major,
@@ -494,30 +494,30 @@
     % -- Curva de temperatura medida --
     \addplot[
       color=AMPrimary, very thick, smooth, mark=none
-    ] coordinates { << datos_cpu_temp >> };
+    ] coordinates { (0,64.8) (2,92.0) (4,95.5) (6,96.1) (8,96.2) (11,96.2) (13,96.1) (15,96.1) (17,96.1) (19,96.1) (21,96.2) (23,96.2) (25,96.2) (27,96.2) (30,96.2) (32,90.1) (34,86.2) (36,85.0) (38,87.4) (40,87.4) (42,86.1) (44,82.4) };
     \addlegendentry{$T_{\text{cpu}}$ (medida)}
 
     % -- Línea de T_idle de referencia --
     \addplot[
       color=StatusOKMid, thick, dashed, mark=none
-    ] coordinates { (0,<< cpu_t_idle >>) (120,<< cpu_t_idle >>) };
-    \addlegendentry{$T_{\text{idle}}$ = << cpu_t_idle >>$^\circ$C}
+    ] coordinates { (0,63.6) (120,63.6) };
+    \addlegendentry{$T_{\text{idle}}$ = 63.6$^\circ$C}
 
     % -- Banda de peligro TjMax (zona roja translúcida) --
     \addplot[
       fill=StatusCrit, fill opacity=0.10, draw=none
-    ] coordinates { (0,<< cpu_tjmax >>) (120,<< cpu_tjmax >>) (120,110) (0,110) }
+    ] coordinates { (0,100) (120,100) (120,110) (0,110) }
     \closedcycle;
 
     % -- Nodo TjMax --
     \node[
       anchor=west, font=\tiny\bfseries, color=StatusCrit
-    ] at (axis cs:2, << cpu_tjmax >>+2) {TjMax (<< cpu_tjmax >>$^\circ$C)};
+    ] at (axis cs:2, 100+2) {TjMax (100$^\circ$C)};
 
     % -- NUEVO NODO: T_idle + 5 (Flotando adentro del gráfico) --
     \node[
       anchor=south west, font=\tiny\bfseries, color=StatusWarn
-    ] at (axis cs:2, << cpu_t_idle_plus5 >>) {$T_{\text{idle}}+5^\circ$};
+    ] at (axis cs:2, 68.6) {$T_{\text{idle}}+5^\circ$};
 
   \end{axis}
   \end{tikzpicture}
@@ -530,37 +530,25 @@
     \toprule
     \thcell{Parámetro} & \thcell{Valor} \\
     \midrule
-    $T_{\max}$ bajo carga        & \mv{<< cpu_t_max >>$^\circ$C} \\
+    $T_{\max}$ bajo carga        & \mv{96.2$^\circ$C} \\
     \rowalt
-    $T_{\text{idle}}$ medida     & \mv{<< cpu_t_idle >>$^\circ$C} \\
-    $\Delta T_{\text{recovery}}$ & \mv{<< cpu_delta_t >>$^\circ$C} \\
+    $T_{\text{idle}}$ medida     & \mv{63.6$^\circ$C} \\
+    $\Delta T_{\text{recovery}}$ & \mv{32.6$^\circ$C} \\
     \rowalt
-    Tiempo de recuperación       & \mv{<< cpu_recovery_time >>\ s} \\
-    Límite TjMax                 & \mv{<< cpu_tjmax >>$^\circ$C} \\
+    Tiempo de recuperación       & \mv{0.0\ s} \\
+    Límite TjMax                 & \mv{100$^\circ$C} \\
     \rowalt
-    Pasta térmica (estimada)     & << cpu_tim_status >> \\
+    Pasta térmica (estimada)     & Degradada — sustituir pronto \\
     \bottomrule
   \end{tabularx}
 
   \vspace{0.5cm}
 
-  [% if cpu_thermal_status == "ok" %]
-  \begin{amboxok}{Estabilidad Térmica}
-    \scriptsize Recuperación dentro del margen.\\
-    $\Delta T =\ $\mv{<< cpu_delta_t >>$^\circ$C} (umbral: 15$^\circ$C)
-  \end{amboxok}
-  [% elif cpu_thermal_status == "warn" %]
-  \begin{amboxwarn}{Disipación Marginal}
-    \scriptsize Tiempo de recuperación elevado.\\
-    Verificar pasta térmica y ventilador.
-  \end{amboxwarn}
-  [% else %]
-  \begin{amboxcrit}{Fallo Térmico Detectado}
+    \begin{amboxcrit}{Fallo Térmico Detectado}
     \scriptsize $\Delta T$ supera umbral seguro.\\
     Intervención inmediata requerida.
   \end{amboxcrit}
-  [% endif %]
-\end{minipage}
+  \end{minipage}
 
 
 % ────────────────────────────────────────────────────────────────────────────
@@ -575,12 +563,12 @@
   \thcell{Reloj Sostenido (MHz)} &
   \thcell{Desviación} \\
   \midrule
-  P0 --- Máximo rendimiento  & \mv{<< cpu_base_p0 >>} & << cpu_sust_p0 >> & << cpu_dev_p0 >>\% \\
+  P0 --- Máximo rendimiento  & \mv{4151} & 3984 & 4.0\% \\
   \rowalt
-  P1 --- Balanceado          & \mv{<< cpu_base_p1 >>} & << cpu_sust_p1 >> & << cpu_dev_p1 >>\% \\
-  P2 --- Ahorro de energía   & \mv{<< cpu_base_p2 >>} & << cpu_sust_p2 >> & << cpu_dev_p2 >>\% \\
+  P1 --- Balanceado          & \mv{2698} & 2617 & 3.0\% \\
+  P2 --- Ahorro de energía   & \mv{1100} & 1089 & 1.0\% \\
   \rowalt
-  Throttling térmico (TJ90)  & ---                    & << cpu_throttle_freq >> & --- \\
+  Throttling térmico (TJ90)  & ---                    & 3113 & --- \\
   \bottomrule
 \end{tabularx}
 
@@ -589,23 +577,17 @@
 \begin{minipage}[t]{0.48\linewidth}
   \vspace{0pt} % <--- ANCLA INVISIBLE
   \small
-  \textbf{Eventos de throttling:}\ \mv{<< cpu_throttle_events >>}\\
-  \textbf{Duración acumulada:}\ \mv{<< cpu_throttle_dur >>\ ms}\\
-  \textbf{Causa principal:}\ << cpu_throttle_cause >>
+  \textbf{Eventos de throttling:}\ \mv{0}\\
+  \textbf{Duración acumulada:}\ \mv{0\ ms}\\
+  \textbf{Causa principal:}\ Ninguna
 \end{minipage}
 \hfill
 \begin{minipage}[t]{0.48\linewidth}
   \vspace{0pt} % <--- ANCLA INVISIBLE
-  [% if cpu_throttle_events == 0 %]
-  \begin{amboxok}{Sin Throttling}
+    \begin{amboxok}{Sin Throttling}
     \scriptsize Frecuencia plena sostenida durante toda la prueba de carga.
   \end{amboxok}
-  [% else %]
-  \begin{amboxwarn}{Throttling Detectado}
-    \scriptsize \mv{<< cpu_throttle_events >>} evento(s). Causa: << cpu_throttle_cause >>
-  \end{amboxwarn}
-  [% endif %]
-\end{minipage}
+  \end{minipage}
 
 \vspace{0.6cm}
 
@@ -615,28 +597,12 @@
 % ────────────────────────────────────────────────────────────────────────────
 \subsection{Machine Check Exceptions (MCE)}
 
-[% if mce_count == 0 %]
 \begin{amboxok}{Sin Errores MCE Detectados}
   \small
   No se registraron Machine Check Exceptions en el log del kernel.\\[3pt]
-  \textbf{Bancos MCE escaneados:}\ << mce_banks_scanned >>\quad
-  \textbf{Última verificación:}\ << mce_last_check >>
+  \textbf{Bancos MCE escaneados:}\ 17\quad
+  \textbf{Última verificación:}\ 2026-04-12 19:03
 \end{amboxok}
-[% else %]
-\begin{amboxcrit}{Errores MCE Detectados --- Fallo de Hardware Probable}
-  \small
-  Se detectaron \mv{<< mce_count >>} Machine Check Exception(s).\\[6pt]
-  \begin{tabularx}{\linewidth}{@{} c X X l @{}}
-    \toprule
-    \rowcolor{StatusCritBg}
-    \textbf{Banco} & \textbf{MCi\_STATUS} & \textbf{Tipo de Error} & \textbf{Timestamp} \\
-    \midrule
-    << mce_tabla_filas >>
-    \bottomrule
-  \end{tabularx}\\[4pt]
-  \textbf{Recomendación:}\ << mce_recomendacion >>
-\end{amboxcrit}
-[% endif %]
 
 \newpage
 
@@ -648,10 +614,10 @@
 
 \begin{componentinfo}
   \small
-  \textbf{GPU:}\ \mv{<< gpu_model >>}\hfill
-  \textbf{VRAM:}\ \mv{<< gpu_vram_total >>\ GB}\ (<< gpu_vram_type >>)\hfill
-  \textbf{Driver:}\ << gpu_driver_version >>\hfill
-  \textbf{Bus:}\ PCIe\ << gpu_pcie_gen >>\ x<< gpu_pcie_width >>
+  \textbf{GPU:}\ \mv{N/A}\hfill
+  \textbf{VRAM:}\ \mv{1\ GB}\ (N/A)\hfill
+  \textbf{Driver:}\ N/A\hfill
+  \textbf{Bus:}\ PCIe\ 4\ x16
 \end{componentinfo}
 
 \vspace{0.5cm}
@@ -682,8 +648,8 @@
     xshift=4pt
   },
   nodes near coords align = {horizontal},
-  extra x ticks      = {<< gpu_temp_limit >>},
-  extra x tick labels = {Límite \mv{<< gpu_temp_limit >>$^\circ$C}},
+  extra x ticks      = {110},
+  extra x tick labels = {Límite \mv{110$^\circ$C}},
   extra x tick style  = {
     grid       = major,
     grid style = {dashed, very thick, color=StatusCrit, opacity=0.7},
@@ -696,28 +662,22 @@
 ]
   % -- Barra T_edge --
   \addplot[fill=AMSlate, draw=AMSecondary, fill opacity=0.85]
-    coordinates { (<< gpu_t_edge >>,Edge) };
-  \addlegendentry{$T_{\text{edge}}$ = << gpu_t_edge >>$^\circ$C}
+    coordinates { (76.0,Edge) };
+  \addlegendentry{$T_{\text{edge}}$ = 76.0$^\circ$C}
 
   % -- Barra T_hotspot --
   \addplot[fill=AMSecondary, draw=AMPrimary, fill opacity=0.85]
-    coordinates { (<< gpu_t_hotspot >>,Hotspot) };
-  \addlegendentry{$T_{\text{hotspot}}$ = << gpu_t_hotspot >>$^\circ$C}
+    coordinates { (0.0,Hotspot) };
+  \addlegendentry{$T_{\text{hotspot}}$ = 0.0$^\circ$C}
 
 \end{axis}
 \end{tikzpicture}
 \end{center}
 
 \noindent\small
-$\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu_delta_t_hotspot >>$^\circ$C}
+$\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{-76.0$^\circ$C}
 \hspace{1cm}
-[% if gpu_hotspot_status == "ok" %]
 \badgeok\ Delta dentro del rango normal ($<$20$^\circ$C)
-[% elif gpu_hotspot_status == "warn" %]
-\badgewarn\ Delta elevado --- verificar pasta térmica de GPU.
-[% else %]
-\badgefail\ Delta crítico --- posible degradación de TIM o problema en die.
-[% endif %]
 
 \vspace{0.5cm}
 
@@ -732,19 +692,19 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \thcell{Prueba de Memoria} & \thcell{Tamaño} &
   \thcell{Patrón} & \thcell{Errores} & \thcell{Estado} \\
   \midrule
-  Escritura/Lectura secuencial & \mv{<< gpu_vram_total >>\ GB} & \texttt{0xDEADBEEF} &
-    \mv{<< gpu_vram_seq_errors >>} &
-    [% if gpu_vram_seq_errors == 0 %]\badgeok[% else %]\badgefail[% endif %] \\
+  Escritura/Lectura secuencial & \mv{1\ GB} & \texttt{0xDEADBEEF} &
+    \mv{0} &
+    \badgeok \\
   \rowalt
-  Patrón de bits aleatorio     & \mv{<< gpu_vram_total >>\ GB} & Random &
-    \mv{<< gpu_vram_rand_errors >>} &
-    [% if gpu_vram_rand_errors == 0 %]\badgeok[% else %]\badgefail[% endif %] \\
-  Stress combinado (30 s)      & \mv{<< gpu_vram_stress_gb >>\ GB} & Mixed &
-    \mv{<< gpu_vram_stress_errors >>} &
-    [% if gpu_vram_stress_errors == 0 %]\badgeok[% else %]\badgefail[% endif %] \\
+  Patrón de bits aleatorio     & \mv{1\ GB} & Random &
+    \mv{0} &
+    \badgeok \\
+  Stress combinado (30 s)      & \mv{1\ GB} & Mixed &
+    \mv{0} &
+    \badgeok \\
   \rowalt
-  Conteo ECC corregibles       & --- & --- & \mv{<< gpu_ecc_correctable >>} &
-    [% if gpu_ecc_correctable == 0 %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Conteo ECC corregibles       & --- & --- & \mv{0} &
+    \badgeok \\
   \bottomrule
 \end{tabularx}
 
@@ -761,35 +721,23 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
     \toprule
     \thcell{Parámetro} & \thcell{Soportado} & \thcell{Activo} \\
     \midrule
-    Generación PCIe        & Gen<< gpu_pcie_gen_max >>   & \mv{Gen<< gpu_pcie_gen_active >>} \\
+    Generación PCIe        & Gen4   & \mv{Gen4} \\
     \rowalt
-    Ancho de banda (lanes) & x<< gpu_pcie_lanes_max >>   & \mv{x<< gpu_pcie_lanes_active >>} \\
-    Ancho de banda (GB/s)  & << gpu_pcie_bw_max >>       & \mv{<< gpu_pcie_bw_active >>} \\
+    Ancho de banda (lanes) & x16   & \mv{x16} \\
+    Ancho de banda (GB/s)  & 32 GB/s       & \mv{32 GB/s} \\
     \rowalt
-    Errores AER corregibles & ---                         & \mv{<< gpu_aer_correctable >>} \\
-    Errores AER fatales     & ---                         & \mv{<< gpu_aer_fatal >>} \\
+    Errores AER corregibles & ---                         & \mv{0} \\
+    Errores AER fatales     & ---                         & \mv{0} \\
     \bottomrule
   \end{tabularx}
 \end{minipage}
 \hfill
 \begin{minipage}[t]{0.41\linewidth}
-  [% if gpu_pcie_lanes_active == gpu_pcie_lanes_max and gpu_aer_fatal == 0 %]
-  \begin{amboxok}{PCIe Estable}
+    \begin{amboxok}{PCIe Estable}
     \scriptsize Enlace en capacidad máxima.\\
     Sin errores AER fatales.
   \end{amboxok}
-  [% elif gpu_aer_fatal > 0 %]
-  \begin{amboxcrit}{Errores AER Fatales}
-    \scriptsize \mv{<< gpu_aer_fatal >>} error(es) AER fatal(es).\\
-    Posible fallo en slot o conector.
-  \end{amboxcrit}
-  [% else %]
-  \begin{amboxwarn}{Enlace PCIe Degradado}
-    \scriptsize Lanes activos: x<< gpu_pcie_lanes_active >>\\
-    (esperado: x<< gpu_pcie_lanes_max >>). Revisar slot.
-  \end{amboxwarn}
-  [% endif %]
-\end{minipage}
+  \end{minipage}
 
 \newpage
 
@@ -801,12 +749,12 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
 \begin{componentinfo}
   \small
-  \textbf{Dispositivo:}\ \texttt{<< nvme_device >>}\hfill
-  \textbf{Modelo:}\ \mv{<< nvme_model >>}\hfill
-  \textbf{Capacidad:}\ \mv{<< nvme_capacity >>\ GB}\hfill
-  \textbf{FW:}\ << nvme_firmware >>\\
-  \textbf{TBW restante:}\ \mv{<< nvme_tbw_remaining >>\ TB}\ de\ << nvme_tbw_rated >>\ TB\hfill
-  \textbf{Horas de uso:}\ \mv{<< nvme_hours >>\ h}
+  \textbf{Dispositivo:}\ \texttt{/dev/nvme0n1}\hfill
+  \textbf{Modelo:}\ \mv{SAMSUNG MZVL4256HBJD-00BTW}\hfill
+  \textbf{Capacidad:}\ \mv{256\ GB}\hfill
+  \textbf{FW:}\ HXC70W1Q\\
+  \textbf{TBW restante:}\ \mv{107.0\ TB}\ de\ 138.9\ TB\hfill
+  \textbf{Horas de uso:}\ \mv{7568\ h}
 \end{componentinfo}
 
 \vspace{0.5cm}
@@ -857,16 +805,16 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \addplot[
     fill=AMSlate, draw=AMPrimary, fill opacity=0.82
   ] coordinates {
-    (b0,[% if lat_b0 == 0 %]1[% else %]<< lat_b0 >>[% endif %])
-    (b1,[% if lat_b1 == 0 %]1[% else %]<< lat_b1 >>[% endif %])
-    (b2,[% if lat_b2 == 0 %]1[% else %]<< lat_b2 >>[% endif %])
-    (b3,[% if lat_b3 == 0 %]1[% else %]<< lat_b3 >>[% endif %])
-    (b4,[% if lat_b4 == 0 %]1[% else %]<< lat_b4 >>[% endif %])
-    (b5,[% if lat_b5 == 0 %]1[% else %]<< lat_b5 >>[% endif %])
-    (b6,[% if lat_b6 == 0 %]1[% else %]<< lat_b6 >>[% endif %])
-    (b7,[% if lat_b7 == 0 %]1[% else %]<< lat_b7 >>[% endif %])
-    (b8,[% if lat_b8 == 0 %]1[% else %]<< lat_b8 >>[% endif %])
-    (b9,[% if lat_b9 == 0 %]1[% else %]<< lat_b9 >>[% endif %])
+    (b0,33)
+    (b1,40)
+    (b2,10)
+    (b3,8)
+    (b4,60051)
+    (b5,131918)
+    (b6,17806)
+    (b7,34935)
+    (b8,6906)
+    (b9,2510)
   };
   \addlegendentry{Frecuencia de operaciones}
 
@@ -885,10 +833,10 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 \end{center}
 
 \noindent\small
-\textbf{P50:}\ \mv{<< nvme_lat_p50 >>\ $\mu$s}\quad
-\textbf{P95:}\ \mv{<< nvme_lat_p95 >>\ $\mu$s}\quad
-\textbf{P99:}\ \mv{<< nvme_lat_p99 >>\ $\mu$s}\quad
-\textbf{P99.9:}\ \mv{<< nvme_lat_p999 >>\ $\mu$s}
+\textbf{P50:}\ \mv{0.0\ $\mu$s}\quad
+\textbf{P95:}\ \mv{0.0\ $\mu$s}\quad
+\textbf{P99:}\ \mv{0.0\ $\mu$s}\quad
+\textbf{P99.9:}\ \mv{0.0\ $\mu$s}
 
 \vspace{0.5cm}
 
@@ -903,24 +851,24 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \thcell{Métrica NVMe} & \thcell{Valor Actual} &
   \thcell{Umbral} & \thcell{Estado} \\
   \midrule
-  Write Amplification Factor (WAF) & \mv{<< nvme_waf >>} & $\leq 3.0$ &
-    [% if nvme_waf_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Write Amplification Factor (WAF) & \mv{1.085} & $\leq 3.0$ &
+    \badgeok \\
   \rowalt
-  LBA escritos (host)         & \mv{<< nvme_lba_written >>\ TB}  & --- & --- \\
-  NAND escritas (total)       & \mv{<< nvme_nand_written >>\ TB} & --- & --- \\
+  LBA escritos (host)         & \mv{31.95\ TB}  & --- & --- \\
+  NAND escritas (total)       & \mv{34.67\ TB} & --- & --- \\
   \rowalt
-  Bloques NAND defectuosos    & \mv{<< nvme_bad_blocks >>}   & $\leq 50$ &
-    [% if nvme_bad_blocks_ok %]\badgeok[% else %]\badgefail[% endif %] \\
-  Spare blocks restantes      & \mv{<< nvme_spare_blocks >>} & $\geq 10$ &
-    [% if nvme_spare_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Bloques NAND defectuosos    & \mv{0}   & $\leq 50$ &
+    \badgeok \\
+  Spare blocks restantes      & \mv{100} & $\geq 10$ &
+    \badgeok \\
   \rowalt
-  Errores ECC corregibles     & \mv{<< nvme_ecc_errors >>}   & $< 100$ &
-    [% if nvme_ecc_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
-  Temperatura máx. registrada & \mv{<< nvme_t_max >>$^\circ$C} & $< 70^\circ$C &
-    [% if nvme_temp_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Errores ECC corregibles     & \mv{0}   & $< 100$ &
+    \badgeok \\
+  Temperatura máx. registrada & \mv{35.0$^\circ$C} & $< 70^\circ$C &
+    \badgeok \\
   \rowalt
-  Porcentaje de vida restante & \mv{<< nvme_life_pct >>\%} & $\geq 20\%$ &
-    [% if nvme_life_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Porcentaje de vida restante & \mv{77\%} & $\geq 20\%$ &
+    \badgeok \\
   \bottomrule
 \end{tabularx}
 
@@ -934,11 +882,10 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
 \begin{componentinfo}
   \small
-  \textbf{Total:}\ \mv{<< ram_total_gb >>\ GB}\hfill
-  \textbf{Tipo:}\ \mv{<< ram_type >>-<< ram_speed >>}\hfill
-  \textbf{Slots:}\ \mv{<< ram_slots_used >>/<< ram_slots_total >>}\hfill
-  \textbf{Dual Channel:}\ [% if ram_dual_channel %]\badgeok\ Activo[% else %]\badgefail\ Inactivo[% endif %]
-\end{componentinfo}
+  \textbf{Total:}\ \mv{8\ GB}\hfill
+  \textbf{Tipo:}\ \mv{LPDDR5-5500}\hfill
+  \textbf{Slots:}\ \mv{2/2}\hfill
+  \textbf{Dual Channel:}\ \badgeok\ Activo\end{componentinfo}
 
 \vspace{0.5cm}
 
@@ -955,17 +902,19 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
     \thcell{Módulo DIMM} & \thcell{Tamaño} &
     \thcell{Errores} & \thcell{Estado} \\
     \midrule
-    << ram_edac_filas >>
+        DIMM 0 & 4 GB & 0 & \badgeok \\
+    \rowalt
+    DIMM 0 & 4 GB & 0 & \badgeok \\
     \bottomrule
     \multicolumn{2}{@{}l}{\scriptsize\textit{Total errores detectados:}} &
-    \multicolumn{2}{c@{}}{\mv{<< ram_total_errors >>}} \\
+    \multicolumn{2}{c@{}}{\mv{0}} \\
   \end{tabularx}
 
   \vspace{0.4cm}
   \small
-  \textbf{Velocidad efectiva:}\ \mv{<< ram_speed_effective >>\ MHz}\\
-  \textbf{Latencia CAS medida:}\ \mv{<< ram_cas_ns >>\ ns}\\
-  \textbf{Método de prueba:}\ \texttt{<< ram_test_method >>}
+  \textbf{Velocidad efectiva:}\ \mv{5500\ MHz}\\
+  \textbf{Latencia CAS medida:}\ \mv{0.0\ ns}\\
+  \textbf{Método de prueba:}\ \texttt{edac-utils + memtester}
 \end{minipage}%
 \hfill
 \begin{minipage}[t]{0.43\linewidth}
@@ -975,7 +924,7 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \begin{tikzpicture}
     % Ángulo de la porción íntegra (inyectado por Python)
     % start: 90° (12h) en sentido antihorario
-    \pgfmathsetmacro{\intAngle}{<< ram_pie_angle >>}
+    \pgfmathsetmacro{\intAngle}{360.0}
     \pgfmathsetmacro{\failStart}{90 - \intAngle}
 
     % -- Sector íntegro (verde) --
@@ -995,7 +944,7 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
     % -- Texto central --
     \node[align=center] at (0,0) {%
-      \textcolor{StatusOK}{\bfseries\small << ram_integrity_pct >>\%}\\[-1pt]
+      \textcolor{StatusOK}{\bfseries\small 100.0\%}\\[-1pt]
       \textcolor{AMSlate}{\tiny Íntegra}%
     };
 
@@ -1005,9 +954,9 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
     % -- Leyenda --
     \node[right, font=\scriptsize, anchor=west] at (2.05cm,  0.45cm)
-      {\textcolor{StatusOKMid}{$\blacksquare$}\ Íntegra\ (<< ram_integrity_pct >>\%)};
+      {\textcolor{StatusOKMid}{$\blacksquare$}\ Íntegra\ (100.0\%)};
     \node[right, font=\scriptsize, anchor=west] at (2.05cm, -0.10cm)
-      {\textcolor{StatusCritMid}{$\blacksquare$}\ Defectos\ (<< ram_fail_pct >>\%)};
+      {\textcolor{StatusCritMid}{$\blacksquare$}\ Defectos\ (0.0\%)};
 
     % -- Título --
     \node[above, font=\small\bfseries, color=AMPrimary]
@@ -1018,17 +967,10 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
   \vspace{0.6cm}
 
-  [% if ram_total_errors == 0 %]
-  \begin{amboxok}{RAM Sin Errores}
+    \begin{amboxok}{RAM Sin Errores}
     \scriptsize Todos los módulos DIMM pasaron las pruebas de integridad.
   \end{amboxok}
-  [% else %]
-  \begin{amboxcrit}{Errores de Memoria Detectados}
-    \scriptsize \mv{<< ram_total_errors >>} error(es) en EDAC/memtester.\\
-    Aislar y reemplazar módulo defectuoso.
-  \end{amboxcrit}
-  [% endif %]
-
+  
 \newpage
 
 
@@ -1039,9 +981,9 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
 \begin{componentinfo}
   \small
-  \textbf{Placa Base:}\ \mv{<< mobo_manufacturer >>\ << mobo_model >>}\hfill
-  \textbf{Chipset:}\ << mobo_chipset >>\hfill
-  \textbf{BIOS/UEFI:}\ << bios_version >>\ (<< bios_date >>)
+  \textbf{Placa Base:}\ \mv{ASUSTeK COMPUTER INC.\ E1504FA}\hfill
+  \textbf{Chipset:}\ Advanced Micro Devices, Inc. [AMD] Family 17h-19h PCIe Root Complex\hfill
+  \textbf{BIOS/UEFI:}\ E1504FA.314\ (04/11/2025)
 \end{componentinfo}
 
 \vspace{0.5cm}
@@ -1070,28 +1012,28 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \addplot[
     fill=StatusOKMid, fill opacity=0.07, draw=none, forget plot
   ] coordinates {
-    (0,  << vrm_tol_low >>)  (60, << vrm_tol_low >>)
-    (60, << vrm_tol_high >>) (0,  << vrm_tol_high >>)
+    (0,  1.273)  (60, 1.273)
+    (60, 1.407) (0,  1.407)
   } \closedcycle;
 
   % -- Voltaje solicitado (VID) --
   \addplot[
     color=AMSlate, thick, dashed, mark=none
-  ] coordinates { << datos_vrm_vid >> };
+  ] coordinates { (0,1.34) (2,1.34) (4,1.34) (6,1.3407) (8,1.342) (10,1.3433) (12,1.3447) (14,1.346) (16,1.3473) (18,1.3487) (20,1.35) (22,1.348) (24,1.348) (26,1.348) (28,1.348) (30,1.348) (32,1.348) (34,1.348) (36,1.348) (38,1.348) (40,1.348) (42,1.348) (44,1.348) (46,1.3475) (48,1.3464) (50,1.3453) (52,1.3443) (54,1.3432) (56,1.3421) (58,1.3411) (60,1.34) };
   \addlegendentry{$V_{\text{solicitado}}$ (VID)}
 
   % -- Voltaje entregado (medido por sensor) --
   \addplot[
     color=AMPrimary, thick, smooth, mark=none
-  ] coordinates { << datos_vrm_medido >> };
+  ] coordinates { (0,1.34) (2,1.34) (4,1.34) (6,1.3383) (8,1.3348) (10,1.3313) (12,1.3279) (14,1.3244) (16,1.3209) (18,1.3175) (20,1.314) (22,1.3145) (24,1.3148) (26,1.315) (28,1.3149) (30,1.3146) (32,1.3141) (34,1.3136) (36,1.3132) (38,1.313) (40,1.313) (42,1.3133) (44,1.3138) (46,1.3157) (48,1.3192) (50,1.3227) (52,1.3261) (54,1.3296) (56,1.3331) (58,1.3365) (60,1.34) };
   \addlegendentry{$V_{\text{entregado}}$ (sensor)}
 
   % -- Anotación del droop máximo --
   \draw[->, color=AMSlate, thin]
-    (axis cs:<< vrm_droop_t >>, << vrm_droop_v >>)
-    -- (axis cs:<< vrm_droop_t >>+8, << vrm_droop_v >>-0.04)
+    (axis cs:20.0, 1.314)
+    -- (axis cs:20.0+8, 1.314-0.04)
     node[right, font=\tiny, color=AMSlate] {%
-      $V_{\text{droop}}$\mv{= << vrm_vdroop_max >>\ V}%
+      $V_{\text{droop}}$\mv{= 0.026\ V}%
     };
 
 \end{axis}
@@ -1099,25 +1041,15 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
 \vspace{0.3cm}
 \noindent\small
-\textbf{$V_{\text{droop}}$ máx.:}\ \mv{<< vrm_vdroop_max >>\ V}\quad
-\textbf{Temperatura VRM:}\ \mv{<< vrm_temp >>$^\circ$C}\quad
-\textbf{Fases VRM:}\ \mv{<< vrm_phases >>}\quad
-\textbf{Estado:}\ \mv{<< vdroop_status >>}
+\textbf{$V_{\text{droop}}$ máx.:}\ \mv{0.026\ V}\quad
+\textbf{Temperatura VRM:}\ \mv{0.0$^\circ$C}\quad
+\textbf{Fases VRM:}\ \mv{0}\quad
+\textbf{Estado:}\ \mv{Dentro de tolerancia}
 
 \vspace{0.3cm}
-[% if vrm_status == "ok" %]
 \begin{amboxok}{VRM Estable}
   \scriptsize Caída de voltaje dentro del margen de tolerancia ($\pm$5\%). Sin riesgo de inestabilidad.
 \end{amboxok}
-[% elif vrm_status == "warn" %]
-\begin{amboxwarn}{Caída de Voltaje Moderada}
-  \scriptsize $V_{\text{droop}}$ de \mv{<< vrm_vdroop_max >>\ V} detectado. Verificar fases VRM y capacitores de desacople.
-\end{amboxwarn}
-[% else %]
-\begin{amboxcrit}{VRM Inestable --- Caída Excesiva}
-  \scriptsize Caída de voltaje fuera de especificaciones. Riesgo de crashes y daño al procesador. Reemplazar VRM.
-\end{amboxcrit}
-[% endif %]
 
 \vspace{0.6cm}
 
@@ -1127,26 +1059,25 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 % ────────────────────────────────────────────────────────────────────────────
 \subsection{Estado de Batería (si aplica)}
 
-[% if battery_present %]
 
 \begin{minipage}[t]{0.54\linewidth}
   \begin{tabularx}{\linewidth}{@{} X r @{}}
     \toprule
     \thcell{Parámetro de Batería} & \thcell{Valor} \\
     \midrule
-    Capacidad de diseño         & \mv{<< bat_design_cap >>\ mWh} \\
+    Capacidad de diseño         & \mv{45006\ mWh} \\
     \rowalt
-    Capacidad actual (plena)    & \mv{<< bat_full_cap >>\ mWh} \\
-    Ciclos de carga             & \mv{<< bat_cycles >>} \\
+    Capacidad actual (plena)    & \mv{42128\ mWh} \\
+    Ciclos de carga             & \mv{0} \\
     \rowalt
-    Estado de salud (SoH)       & \mv{<< bat_soh >>\%} \\
-    Voltaje nominal             & \mv{<< bat_voltage_nom >>\ V} \\
+    Estado de salud (SoH)       & \mv{94\%} \\
+    Voltaje nominal             & \mv{11.85\ V} \\
     \rowalt
-    Voltaje bajo carga          & \mv{<< bat_voltage_load >>\ V} \\
-    $\Delta V$ bajo carga       & \mv{<< bat_voltage_drop >>\ V} \\
+    Voltaje bajo carga          & \mv{12.678\ V} \\
+    $\Delta V$ bajo carga       & \mv{0.0\ V} \\
     \rowalt
-    Corriente de descarga       & \mv{<< bat_current_load >>\ mA} \\
-    Resistencia interna est.    & \mv{<< bat_resistance >>\ m$\Omega$} \\
+    Corriente de descarga       & \mv{0\ mA} \\
+    Resistencia interna est.    & \mv{0.0\ m$\Omega$} \\
     \bottomrule
   \end{tabularx}
 \end{minipage}%
@@ -1163,8 +1094,8 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
     \fill[AMBorder!60] (0,0) rectangle (\bw, \bh);
 
     % Relleno de color según SoH (longitud pre-calculada por Python)
-    \fill[<< bat_gauge_color >>]
-      (0,0) rectangle (<< bat_gauge_fill >>, \bh);
+    \fill[StatusOKMid]
+      (0,0) rectangle (4.32, \bh);
 
     % Divisores de zona (0-40%=critico, 40-70%=moderado, 70-100%=bueno)
     \draw[white, line width=1.2pt] (1.84, 0) -- (1.84, \bh);  % 40%
@@ -1172,12 +1103,12 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
     % Indicador de posición actual
     \draw[AMPrimary, very thick]
-      (<< bat_gauge_fill >>, -0.18) -- (<< bat_gauge_fill >>, \bh+0.18);
+      (4.32, -0.18) -- (4.32, \bh+0.18);
     % Triángulo indicador
     \fill[AMPrimary]
-      (<< bat_gauge_fill >>, \bh+0.18) --
-      ({<< bat_gauge_fill >>-0.12}, \bh+0.38) --
-      ({<< bat_gauge_fill >>+0.12}, \bh+0.38) -- cycle;
+      (4.32, \bh+0.18) --
+      ({4.32-0.12}, \bh+0.38) --
+      ({4.32+0.12}, \bh+0.38) -- cycle;
 
     % Etiquetas de zona
     \node[font=\tiny, color=StatusCrit]
@@ -1192,36 +1123,21 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
     % Valor de SoH
     \node[above, font=\bfseries\small, color=AMPrimary]
-      at (\bw/2, \bh+0.55) {Estado de Salud (SoH): \mv{<< bat_soh >>\%}};
+      at (\bw/2, \bh+0.55) {Estado de Salud (SoH): \mv{94\%}};
 
     % Título
     \node[above, font=\scriptsize, color=AMSlate]
-      at (\bw/2, \bh+1.0) {Resistencia interna est.: \mv{<< bat_resistance >>\ m$\Omega$}};
+      at (\bw/2, \bh+1.0) {Resistencia interna est.: \mv{0.0\ m$\Omega$}};
   \end{tikzpicture}
   \end{center}
   \end{minipage}
 
   \vspace{0.6cm}
 
-  [% if bat_soh >= 80 %]
-  \begin{amboxok}{Batería en Buen Estado}
-    \scriptsize SoH: \mv{<< bat_soh >>\%}. No requiere reemplazo.
+    \begin{amboxok}{Batería en Buen Estado}
+    \scriptsize SoH: \mv{94\%}. No requiere reemplazo.
   \end{amboxok}
-  [% elif bat_soh >= 60 %]
-  \begin{amboxwarn}{Degradación Moderada}
-    \scriptsize SoH: \mv{<< bat_soh >>\%}. Considerar reemplazo próximo.
-  \end{amboxwarn}
-  [% else %]
-  \begin{amboxcrit}{Batería Muy Degradada}
-    \scriptsize SoH: \mv{<< bat_soh >>\%}. Reemplazo urgente recomendado.
-  \end{amboxcrit}
-  [% endif %]
-
-[% else %]
-\begin{amboxinfo}{Batería No Presente}
-  \scriptsize Este sistema no cuenta con batería interna (equipo de escritorio o batería no detectada en \texttt{/sys/class/power\_supply/}).
-\end{amboxinfo}
-[% endif %]
+  
 
 \newpage
 
@@ -1242,7 +1158,25 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \thcell{Puerto} & \thcell{Versión} & \thcell{Controlador} &
   \thcell{BW (Gbps)} & \thcell{Errores} & \thcell{Estado} \\
   \midrule
-  << usb_tabla_filas >>
+      Bus 1 Puerto 002 & USB 2.0 (HS) & xHCI & 0.48 & 0 & \badgeok \\
+    \rowalt
+    Bus 1 Puerto 004 & USB 2.0 (HS) & xHCI & 0.48 & 0 & \badgeok \\
+    Bus 1 Puerto 004 & USB 2.0 (HS) & xHCI & 0.48 & 0 & \badgeok \\
+    \rowalt
+    Bus 1 Puerto 004 & USB 2.0 (HS) & xHCI & 0.48 & 0 & \badgeok \\
+    Bus 3 Puerto 002 & USB 2.0 (HS) & xHCI & 0.48 & 0 & \badgeok \\
+    \rowalt
+    Bus 3 Puerto 002 & USB 2.0 (HS) & xHCI & 0.48 & 0 & \badgeok \\
+    Bus 3 Puerto 002 & USB 2.0 (HS) & xHCI & 0.48 & 0 & \badgeok \\
+    \rowalt
+    Bus 3 Puerto 003 & USB 1.1 (FS) & xHCI & 0.012 & 0 & \badgeok \\
+    Bus 3 Puerto 003 & USB 1.1 (FS) & xHCI & 0.012 & 0 & \badgeok \\
+    \rowalt
+    Bus 3 Puerto 003 & USB 1.1 (FS) & xHCI & 0.012 & 0 & \badgeok \\
+    Bus 5 Puerto 001 & USB 2.0 (HS) & xHCI & 0.48 & 0 & \badgeok \\
+    \rowalt
+    Bus 5 Puerto 001 & USB 2.0 (HS) & xHCI & 0.48 & 0 & \badgeok \\
+    Bus 5 Puerto 001 & USB 2.0 (HS) & xHCI & 0.48 & 0 & \badgeok \\
   \bottomrule
 \end{tabularx}
 
@@ -1252,30 +1186,18 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \vspace{0pt} % <--- ANCLA INVISIBLE
   \small\textbf{\color{AMPrimary}Resumen de Estado USB:}
   \begin{itemize}[leftmargin=1.2em, itemsep=3pt, topsep=5pt]
-    \item \badgeok\ Puertos estables: \mv{<< usb_ok >>}
-    \item \badgewarn\ Puertos inestables: \mv{<< usb_warn >>}
-    \item \badgefail\ Puertos con fallo/corto: \mv{<< usb_fail >>}
+    \item \badgeok\ Puertos estables: \mv{13}
+    \item \badgewarn\ Puertos inestables: \mv{0}
+    \item \badgefail\ Puertos con fallo/corto: \mv{0}
   \end{itemize}
 \end{minipage}
 \hfill
 \begin{minipage}[t]{0.48\linewidth}
   \vspace{0pt} % <--- ANCLA INVISIBLE
-  [% if usb_fail > 0 %]
-  \begin{amboxcrit}{Puerto(s) USB Defectuosos}
-    \scriptsize \mv{<< usb_fail >>} puerto(s) con fallos.\\
-    Revisar circuito de alimentación y fusibles USB.
-  \end{amboxcrit}
-  [% elif usb_warn > 0 %]
-  \begin{amboxwarn}{Inestabilidad USB}
-    \scriptsize \mv{<< usb_warn >>} puerto(s) con errores intermitentes.\\
-    Verificar voltaje VBUS y controlador.
-  \end{amboxwarn}
-  [% else %]
-  \begin{amboxok}{Todos los Puertos USB Operativos}
+    \begin{amboxok}{Todos los Puertos USB Operativos}
     \scriptsize Sin errores detectados en ningún puerto USB.
   \end{amboxok}
-  [% endif %]
-\end{minipage}
+  \end{minipage}
 
 
 % ════════════════════════════════════════════════════════════════════════════
@@ -1296,21 +1218,21 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \thcell{Sub-Sistema} & \thcell{$\Delta A$ Parcial} &
   \thcell{Estado Clínico} & \thcell{Anotación} \\
   \midrule
-  Procesamiento Central (CPU)   & \textbf{+<< cpu_anomalia >>}  & << cpu_estado_badge >>  & --- \\
+  Procesamiento Central (CPU)   & \textbf{+20}  & \badgewarn  & --- \\
   \rowalt
-  Procesamiento Gráfico (GPU)   & \textbf{+<< gpu_anomalia >>}  & << gpu_estado_badge >>  & --- \\
-  Almacenamiento NVMe/SSD       & \textbf{+<< nvme_anomalia >>} & << nvme_estado_badge >> & --- \\
+  Procesamiento Gráfico (GPU)   & \textbf{+0}  & \badgeok  & --- \\
+  Almacenamiento NVMe/SSD       & \textbf{+0} & \badgeok & --- \\
   \rowalt
-  Memoria Principal (RAM)       & \textbf{+<< ram_anomalia >>}  & << ram_estado_badge >>  & --- \\
-  Placa Base / VRM Energía      & \textbf{+<< mobo_anomalia >>} & << mobo_estado_badge >> & --- \\
+  Memoria Principal (RAM)       & \textbf{+0}  & \badgeok  & --- \\
+  Placa Base / VRM Energía      & \textbf{+0} & \badgeok & --- \\
   \rowalt
-  Bus / Periféricos (USB)       & \textbf{+<< usb_anomalia >>}  & << usb_estado_badge >>  & --- \\
+  Bus / Periféricos (USB)       & \textbf{+0}  & \badgeok  & --- \\
   \rowalt
-  Celdas de Energía (BAT)       & \textbf{+<< bat_anomalia >>}  & << bat_estado_badge >>  & --- \\
+  Celdas de Energía (BAT)       & \textbf{+0}  & \badgeok  & --- \\
   \midrule
   \thcell{ÍNDICE DE ANOMALÍA GLOBAL} &
-  \thcell{<< indice_anomalia >>} &
-  \thcell{<< estado_global_badge >>} &
+  \thcell{20} &
+  \thcell{\badgewarn} &
   \thcell{---} \\
   \bottomrule
 \end{tabularx}
@@ -1331,7 +1253,7 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 ]
   \small
   \begin{enumerate}[leftmargin=*, itemsep=4pt, topsep=2pt]
-    << lista_recomendaciones >>
+    \item \textbf{Sub-sistema CPU / Disipación:} $\Delta T_{\text{recovery}}$ = 32.6°C (umbral: 15°C), $t_{\text{recovery}}$ = 0.0 s (umbral: 45 s). Capacidad de disipación comprometida. Reemplazar pasta térmica. Verificar flujo de aire y disipador.
   \end{enumerate}
 \end{tcolorbox}
 
@@ -1344,18 +1266,18 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
 \begin{minipage}[t]{0.48\linewidth}
   \small\color{AMSlate}
-  \textbf{Emitido por:}\ << taller_nombre >>\\
-  \textbf{Técnico certificado:}\ << tecnico_nombre >>\\
-  \textbf{Fecha de diagnóstico:}\ << fecha_reporte >>\\
-  \textbf{Duración del análisis:}\ << duracion_analisis >>
+  \textbf{Emitido por:}\ Invariant Systems\\
+  \textbf{Técnico certificado:}\ Admin\\
+  \textbf{Fecha de diagnóstico:}\ 2026-04-12 19:07:44\\
+  \textbf{Duración del análisis:}\ 302.0 s
 \end{minipage}
 \hfill
 \begin{minipage}[t]{0.48\linewidth}
   \raggedright\small\color{AMSlate}
-  \textbf{Plataforma:}\ probe\textcolor{redtex}{.tex} v<< version >>\\
-  \textbf{Kernel Linux:}\ << kernel_version >>\\
-  \textbf{ID de Reporte:}\ \texttt{<< report_id >>}\\
-  \textbf{Hash de integridad (SHA-256):}\ \texttt{\tiny << report_hash >>}
+  \textbf{Plataforma:}\ probe\textcolor{redtex}{.tex} v1.0.0\\
+  \textbf{Kernel Linux:}\ 6.19.10-1-cachyos\\
+  \textbf{ID de Reporte:}\ \texttt{INV-2026-001}\\
+  \textbf{Hash de integridad (SHA-256):}\ \texttt{\tiny }
 \end{minipage}
 
 \vspace{0.5cm}

@@ -464,15 +464,32 @@ def extract_disk_data(device_path: str = "/dev/nvme0n1") -> NVMeData:
         except Exception as exc:
             print(f"[disk_reader] WARN flags: {exc}")
 
+        # ── Capa 6.5: Detección de naturaleza física (HDD vs SSD) ────────
+        is_rotational = False
+        try:
+            dev_name = Path(device_path).name
+            rot_path = Path(f"/sys/block/{dev_name}/queue/rotational")
+            if rot_path.exists() and rot_path.read_text().strip() == "1":
+                is_rotational = True
+        except Exception:
+            pass
+
         # ── Capa 7: latencia I/O real (fio) ──────────────────────────────
         buckets: list[int] = [0] * 10
         p50 = p95 = p99 = p999 = 0.0
-        try:
-            buckets, p50, p95, p99, p999 = _run_fio_latency(device_path)
-        except FileNotFoundError:
-            print("[disk_reader] WARN fio no instalado. Latencia no disponible.")
-        except Exception as exc:
-            print(f"[disk_reader] WARN fio: {exc}")
+        if is_rotational:
+            print(f"[disk_reader] INFO {device_path} es un HDD mecánico. Omitiendo prueba fio destructiva.")
+            try:
+                subprocess.Popen(["sudo", "smartctl", "-t", "short", device_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+        else:
+            try:
+                buckets, p50, p95, p99, p999 = _run_fio_latency(device_path)
+            except FileNotFoundError:
+                print("[disk_reader] WARN fio no instalado. Latencia no disponible.")
+            except Exception as exc:
+                print(f"[disk_reader] WARN fio: {exc}")
 
         # ── Ensamblaje final ──────────────────────────────────────────────
         return NVMeData(

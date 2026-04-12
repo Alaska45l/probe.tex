@@ -14,6 +14,7 @@ from extractors.motherboard_reader import extract_motherboard_data
 from extractors.ram_reader import extract_ram_data
 from extractors.gpu_reader import extract_gpu_data
 from extractors.usb_reader import extract_usb_data
+from extractors.battery_reader import extract_battery_data
 from tui import run_tui
 
 def render_pdf():
@@ -21,13 +22,14 @@ def render_pdf():
     start_time = time.time()
 
     # Ejecución paralela de todos los extractores
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
         future_cpu  = executor.submit(extract_cpu_data)
         future_gpu  = executor.submit(extract_gpu_data)
         future_disk = executor.submit(extract_disk_data, "/dev/nvme0n1")
         future_ram  = executor.submit(extract_ram_data)
         future_mobo = executor.submit(extract_motherboard_data)
         future_usb  = executor.submit(extract_usb_data)
+        future_bat  = executor.submit(extract_battery_data)
 
         # Se espera a que todos terminen (sincronización de hilos)
         cpu_data  = future_cpu.result()
@@ -36,6 +38,7 @@ def render_pdf():
         ram_data  = future_ram.result()
         mobo_data = future_mobo.result()
         usb_data  = future_usb.result()
+        bat_data  = future_bat.result()
 
     end_time = time.time()
     duracion_segundos = round(end_time - start_time, 1)
@@ -62,7 +65,8 @@ def render_pdf():
         nvme=disk_data, 
         ram=ram_data, 
         mobo=mobo_data, 
-        usb=usb_data
+        usb=usb_data,
+        battery=bat_data
     )
 
     print("[*] Ensamblando contrato de datos...")
@@ -75,6 +79,7 @@ def render_pdf():
             device_brand="ASUS",
             device_model="Vivobook E1504FA",
             serial_number=serial_number,
+            taller_nombre="Invariant Systems",
             tecnico_nombre="Admin",
             version="1.0.0",
             kernel_version=kernel_version,
@@ -86,7 +91,8 @@ def render_pdf():
         nvme=disk_data,
         ram=ram_data,
         motherboard=mobo_data,
-        usb=usb_data
+        usb=usb_data,
+        battery=bat_data
     )
 
     print("[*] Configurando motor de renderizado Jinja2-LaTeX...")
@@ -110,18 +116,21 @@ def render_pdf():
         "ram_anomalia": entropy_data.ram.delta_a,
         "mobo_anomalia": entropy_data.vrm.delta_a,
         "usb_anomalia": entropy_data.usb.delta_a,
+        "bat_anomalia": entropy_data.battery.delta_a,
         "cpu_estado_badge": entropy_data.badge_cpu,
         "gpu_estado_badge": entropy_data.badge_gpu,
         "nvme_estado_badge": entropy_data.badge_nvme,
         "ram_estado_badge": entropy_data.badge_ram,
         "mobo_estado_badge": entropy_data.badge_mobo,
         "usb_estado_badge": entropy_data.badge_usb,
+        "bat_estado_badge": entropy_data.badge_bat,
         "accion_cpu": entropy_data.accion_cpu,
         "accion_gpu": entropy_data.accion_gpu,
         "accion_nvme": entropy_data.accion_nvme,
         "accion_ram": entropy_data.accion_ram,
         "accion_mobo": entropy_data.accion_mobo,
         "accion_usb": entropy_data.accion_usb,
+        "accion_bat": entropy_data.accion_bat,
         "accion_global": entropy_data.accion_global,
         "estado_global_badge": entropy_data.estado_global_badge,
         "resumen_ejecutivo": entropy_data.resumen_ejecutivo,
