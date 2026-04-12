@@ -1,0 +1,1369 @@
+% ╔══════════════════════════════════════════════════════════════════════════╗
+% ║  probe.tex --- PLANTILLA MAESTRA DE REPORTE                      ║
+% ║  reporte_base.tex  |  Versión 1.0                                       ║
+% ║  Motor: Tectonic   |  Preprocesador: Jinja2                             ║
+% ╚══════════════════════════════════════════════════════════════════════════╝
+
+\documentclass[11pt, a4paper, final]{article}
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  0. PAQUETES --- ORDENADOS POR DEPENDENCIA
+% ════════════════════════════════════════════════════════════════════════════
+
+% --- Codificación y tipografía ---
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+% Fuente principal: Helvetica (o clon similar), ultra limpia y corporativa/industrial.
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+
+% Fuente secundaria (para \texttt{}): IBM Plex Mono o Inconsolata para los datos crudos.
+\usepackage[scale=0.95]{plex-mono} 
+\usepackage{microtype}
+
+% --- Idioma (es-noquoting: previene secuestro de < > por babel) ---
+\usepackage[spanish, es-tabla, es-noquoting]{babel}
+
+% --- Layout ---
+\usepackage[
+  a4paper,
+  top=2.4cm, bottom=2.6cm,
+  left=2.0cm, right=2.0cm,
+  headheight=1.6cm,
+  headsep=0.6cm,
+  footskip=1.0cm
+]{geometry}
+
+% --- Color (cargado antes que los demás para que los usen) ---
+\usepackage[table, dvipsnames, svgnames]{xcolor}
+
+% --- Gráficos y diagramas ---
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{
+  calc,
+  shapes.geometric,
+  arrows.meta,
+  positioning,
+  decorations.pathreplacing,
+  backgrounds,
+  patterns,
+  fit,
+  shadows,
+  babel
+}
+
+% --- Cajas de alerta y contenido ---
+\usepackage{tcolorbox}
+\tcbuselibrary{skins, breakable, theorems, hooks}
+
+% --- Tablas avanzadas ---
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage{colortbl}
+
+% --- MAGIA PARA CENTRAR TABLAS ---
+\renewcommand{\tabularxcolumn}[1]{>{\raggedright\arraybackslash}m{#1}}
+\renewcommand{\arraystretch}{1.3}
+
+% --- Encabezados y pies ---
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+
+% --- Matemáticas ---
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% --- Utilidades de texto ---
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{calc}
+\usepackage{setspace}
+
+% --- Hipervínculos (siempre al final) ---
+\usepackage[
+  hidelinks,
+  pdfauthor={probe.tex},
+  pdftitle={Informe de Diagnóstico Forense de Hardware},
+  pdfsubject={Hardware Diagnostic Report}
+]{hyperref}
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  1. PALETA DE COLORES CORPORATIVOS
+% ════════════════════════════════════════════════════════════════════════════
+
+% --- Escala primaria (azul marino / pizarra) ---
+\definecolor{AMPrimary}   {HTML}{000000}
+\definecolor{AMSecondary} {HTML}{333333}
+\definecolor{AMAccent}    {HTML}{EE0000}
+\definecolor{AMSlate}     {HTML}{555555}
+\definecolor{AMLight}     {HTML}{F0F0F0}
+\definecolor{AMBorder}    {HTML}{DDDDDD}
+\definecolor{AMText}      {HTML}{111111}
+\definecolor{AMCanvas}    {HTML}{FFFFFF}
+
+% --- Colores de estado (semáforo diagnóstico) ---
+\definecolor{StatusOK}     {HTML}{1B4332} % Verde táctico oscuro
+\definecolor{StatusOKBg}   {HTML}{F0FFF4} % Blanco con tinte verde muy sutil
+\definecolor{StatusOKMid}  {HTML}{2D6A4F} % Verde industrial para gráficos
+\definecolor{StatusWarn}   {HTML}{FF5000}
+\definecolor{StatusWarnBg} {HTML}{FFF4E6}
+\definecolor{StatusWarnMid}{HTML}{FF8C00}
+\definecolor{StatusCrit}   {HTML}{EE0000}
+\definecolor{StatusCritBg} {HTML}{FDEEED}
+\definecolor{StatusCritMid}{HTML}{FF3333}
+\definecolor{StatusInfo}   {HTML}{888888}
+\definecolor{StatusInfoBg} {HTML}{F5F5F5}
+\definecolor{redtex}       {HTML}{FF0000} % Rojo vibrante terminal
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  2. CONFIGURACIÓN TIPOGRÁFICA Y SECCIONES
+% ════════════════════════════════════════════════════════════════════════════
+
+\usepackage[explicit]{titlesec}
+
+% Sección: línea izquierda coloreada + numeración en azul
+\titleformat{\section}
+  {\large\bfseries\color{AMPrimary}}
+  {}
+  {0pt}
+  {\textcolor{AMPrimary}{\rule[-0.2ex]{4pt}{1.2em}}\hspace{8pt}#1}
+\titlespacing*{\section}{0pt}{14pt}{6pt}
+
+% Subsección: línea base punteada
+\titleformat{\subsection}
+  {\normalsize\bfseries\color{AMSecondary}}
+  {\thesubsection.}
+  {6pt}
+  {#1}
+\titlespacing*{\subsection}{0pt}{10pt}{4pt}
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  3. CAJAS tcolorbox PERSONALIZADAS
+% ════════════════════════════════════════════════════════════════════════════
+%  Uso en el documento:
+%    \begin{amboxok}{Título}   ... \end{amboxok}
+%    \begin{amboxwarn}{Título} ... \end{amboxwarn}
+%    \begin{amboxcrit}{Título} ... \end{amboxcrit}
+%    \begin{amboxinfo}{Título} ... \end{amboxinfo}
+
+% Macro interna para todas las cajas de estado
+\newcommand{\amstateboxstyle}[5]{%
+  % #1=colback  #2=colframe  #3=symbolo  #4=titulo  #5=contenido
+  \begin{tcolorbox}[
+    enhanced,
+    colback=#1,
+    colframe=#2,
+    coltitle=#2,
+    fonttitle=\bfseries\small,
+    title={#3\enspace #4},
+    boxrule=0.75pt,
+    arc=0pt,
+    left=8pt, right=8pt, top=5pt, bottom=5pt
+  ]
+    #5
+  \end{tcolorbox}%
+}
+
+% PASS / OK --- Verde -> OPTIMAL
+\newtcolorbox{amboxok}[1]{
+  enhanced,
+  colback=StatusOKBg, colframe=StatusOK,
+  coltitle=white, fonttitle=\bfseries\small, % <--- COLTITLE BLANCO
+  title={[ OPTIMAL ]\enspace #1},
+  boxrule=0.75pt, arc=0pt,
+  left=8pt, right=8pt, top=5pt, bottom=5pt
+}
+
+% WARNING --- Naranja -> DEGRADED
+\newtcolorbox{amboxwarn}[1]{
+  enhanced,
+  colback=StatusWarnBg, colframe=StatusWarn,
+  coltitle=white, fonttitle=\bfseries\small, % <--- COLTITLE BLANCO
+  title={[ DEGRADED ]\enspace #1},
+  boxrule=0.75pt, arc=0pt,
+  left=8pt, right=8pt, top=5pt, bottom=5pt
+}
+
+% CRITICAL --- Rojo -> CRITICAL
+\newtcolorbox{amboxcrit}[1]{
+  enhanced,
+  colback=StatusCritBg, colframe=StatusCrit,
+  coltitle=white, fonttitle=\bfseries\small, % <--- COLTITLE BLANCO
+  title={[ CRITICAL ]\enspace #1},
+  boxrule=0.75pt, arc=0pt,
+  left=8pt, right=8pt, top=5pt, bottom=5pt
+}
+
+% INFO --- Azul neutro -> UNKNOWN
+\newtcolorbox{amboxinfo}[1]{
+  enhanced,
+  colback=StatusInfoBg, colframe=StatusInfo,
+  coltitle=white, fonttitle=\bfseries\small, % <--- COLTITLE BLANCO
+  title={[ UNKNOWN ]\enspace #1},
+  boxrule=0.75pt, arc=0pt,
+  left=8pt, right=8pt, top=5pt, bottom=5pt
+}
+
+% Caja de info de componente (banda izquierda, sin título flotante)
+\newtcolorbox{componentinfo}{
+  enhanced,
+  colback=AMLight, colframe=AMPrimary,
+  boxrule=0pt, leftrule=4pt,
+  arc=0pt,
+  left=10pt, right=8pt, top=5pt, bottom=5pt
+}
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  4. CONFIGURACIÓN GLOBAL DE pgfplots
+% ════════════════════════════════════════════════════════════════════════════
+
+\pgfplotsset{
+  % Estilo base aplicable con: \begin{axis}[probe.tex, ...]
+  probe.tex/.style={
+    % Ejes
+    axis line style   = {color=AMSlate, thin},
+    tick style        = {color=AMSlate, thin},
+    tick label style  = {font=\scriptsize, color=AMText},
+    label style       = {font=\footnotesize\bfseries, color=AMSlate},
+    title style       = {font=\small\bfseries, color=AMPrimary, yshift=2pt},
+    % Grilla
+    grid              = both,
+    grid style        = {line width=0.25pt, draw=AMBorder},
+    major grid style  = {line width=0.4pt,  draw=AMBorder},
+    minor grid style  = {line width=0.2pt,  draw=AMBorder!50},
+    % Leyenda
+    legend style = {
+      font         = \scriptsize,
+      draw         = AMBorder,
+      fill         = AMCanvas,
+      rounded corners = 0pt,
+      inner sep    = 4pt,
+      row sep      = 2pt,
+    },
+    % Fondo del área de plot
+    axis background/.style = {fill=none},
+    % Márgenes internos
+    enlargelimits = 0.05,
+  },
+}
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  5. COMANDOS UTILITARIOS
+% ════════════════════════════════════════════════════════════════════════════
+
+% --- Badges de estado inline ---
+% Uso: \badgeok  \badgefail  \badgewarn  \badgeinfo
+\newcommand{\makebadge}[2]{%
+  \tikz[baseline=-0.65ex, inner sep=0pt]\node[ %
+    fill=#1, text=white,
+    font=\bfseries\scriptsize,
+    inner xsep=4pt, inner ysep=2pt,
+    rounded corners=0pt
+  ]{#2};%
+}
+\newcommand{\badgeok}  {\makebadge{StatusOK}{OPTIMAL}}
+\newcommand{\badgefail}{\makebadge{StatusCrit}{CRITICAL}}
+\newcommand{\badgewarn}{\makebadge{StatusWarn}{DEGRADED}}
+\newcommand{\badgeinfo}{\makebadge{StatusInfo}{UNKNOWN}}
+
+% --- Valor métrico destacado ---
+% Uso: \mv{95$^\circ$C}  ->  valor en azul primario negrita
+\newcommand{\mv}[1]{\textcolor{AMPrimary}{\textbf{#1}}}
+
+% --- Separador horizontal de sección ---
+\newcommand{\sectionrule}{%
+  \vspace{4pt}%
+  \noindent\textcolor{AMBorder}{\rule{\linewidth}{0.5pt}}%
+  \vspace{4pt}%
+}
+
+% --- Fila de tabla coloreada alternada ---
+\newcommand{\rowalt}{\rowcolor{AMLight}}
+
+% --- Celda de encabezado de tabla ---
+\newcommand{\thcell}[1]{\color{AMPrimary}\textbf{#1}}
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  6. ENCABEZADOS Y PIE DE PÁGINA (fancyhdr)
+% ════════════════════════════════════════════════════════════════════════════
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Encabezado: banda coloreada con regla inferior
+\fancyhead[L]{%
+  \colorbox{AMPrimary}{%
+    \hspace{2pt}%
+    \color{white}\small\textbf{probe\textcolor{redtex}{.tex}}%
+    \hspace{4pt}%
+  }%
+  \textcolor{AMPrimary}{\rule[-4pt]{1pt}{14pt}}%
+  \hspace{4pt}%
+  \color{AMSlate}\small\textit{Diagnóstico Forense de Hardware}%
+}
+\fancyhead[R]{%
+  \small\color{AMSlate}%
+  << cliente_nombre >> \textcolor{AMBorder}{\textbullet}\ << fecha_reporte >>%
+}
+% Línea bajo encabezado
+\renewcommand{\headrule}{%
+  \vspace{-4pt}%
+  \color{AMPrimary}\rule{\headwidth}{1.2pt}%
+}
+\renewcommand{\headrulewidth}{1.2pt}
+
+% Pie: ID de reporte + paginación
+\fancyfoot[L]{%
+  \scriptsize\color{AMSlate}%
+  ID:\ \texttt{<< report_id >>} \textbar\ v<< version >>%
+}
+\fancyfoot[C]{%
+  \scriptsize\color{AMSlate}%
+  Generado por \textbf{probe\textcolor{redtex}{.tex}} --- Una herramienta de diagnóstico de INVARIANT.%
+}
+\fancyfoot[R]{%
+  \scriptsize\color{AMSlate}%
+  Pág.\ \textbf{\thepage}\ de\ \textbf{\pageref{LastPage}}%
+}
+% Línea gris sobre pie
+\renewcommand{\footrule}{%
+  \color{AMBorder}\rule{\headwidth}{0.5pt}\vskip 2pt%
+}
+\renewcommand{\footrulewidth}{0.5pt}
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  INICIO DEL DOCUMENTO
+% ════════════════════════════════════════════════════════════════════════════
+\begin{document}
+\setlength{\parskip}{6pt}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  PORTADA
+% ────────────────────────────────────────────────────────────────────────────
+\thispagestyle{empty}
+
+\vspace*{1cm}
+\noindent
+{\color{AMSlate}\scriptsize\bfseries\MakeUppercase{Informe Técnico Confidencial} \hfill ID: \texttt{<< report_id >>}}\\[1ex]
+{\color{AMPrimary}\rule{\linewidth}{1.5pt}}\\[4ex]
+
+\noindent
+{\color{black}\fontsize{42}{48}\selectfont\bfseries Diagnóstico}\\[1ex]
+{\color{black}\fontsize{42}{48}\selectfont\bfseries Forense de Hardware} {\color{StatusCrit}\rule{14pt}{14pt}}\\[3ex]
+{\color{AMSlate}\Large Hardware Audit Report}
+
+\vspace{2.5cm}
+
+% --- Bloques de Especificaciones ---
+\noindent
+\begin{minipage}[t]{0.5\textwidth}
+  {\scriptsize\bfseries\color{AMSlate}HARDWARE OBJETIVO}\\[1ex]
+  {\Large\bfseries\color{AMPrimary}<< device_brand >>\ << device_model >>}\\[1ex]
+  {\small\color{AMSlate}S/N:\ \texttt{<< serial_number >>}}
+\end{minipage}%
+\begin{minipage}[t]{0.5\textwidth}
+  {\scriptsize\bfseries\color{AMSlate}ENTORNO DE EJECUCIÓN}\\[1ex]
+  {\normalsize\bfseries\color{AMPrimary}probe\textcolor{redtex}{.tex} v<< version >>}\\[1ex]
+  {\small\color{AMSlate}Kernel Linux:\ << kernel_version >>}
+\end{minipage}
+
+\vspace{1.5cm}
+
+\noindent
+\begin{minipage}[t]{0.5\textwidth}
+  {\scriptsize\bfseries\color{AMSlate}CLIENTE / PROPIETARIO}\\[1ex]
+  {\normalsize\bfseries\color{AMPrimary}<< cliente_nombre >>}\\[1ex]
+  {\small\color{AMSlate}<< cliente_email >>}\\[0.5ex]
+  {\small\color{AMSlate}<< cliente_telefono >>}
+\end{minipage}%
+\begin{minipage}[t]{0.5\textwidth}
+  {\scriptsize\bfseries\color{AMSlate}DIAGNÓSTICO REALIZADO POR}\\[1ex]
+  {\normalsize\bfseries\color{AMPrimary}<< taller_nombre >>}\\[1ex]
+  {\small\color{AMSlate}Técnico:\ << tecnico_nombre >>}\\[0.5ex]
+  {\small\color{AMSlate}Fecha:\ << fecha_reporte >>}
+\end{minipage}
+
+\vspace*{\fill}
+
+% --- Veredicto Global ---
+\noindent
+\begin{tikzpicture}
+  \node[
+    fill=AMCanvas,
+    inner sep=18pt,
+    text width=\textwidth - 36pt,
+    draw=AMPrimary, line width=1.5pt
+  ]{%
+    \begin{minipage}[c]{0.65\textwidth}
+      \small\color{AMText}
+      \textbf{\color{AMPrimary}ANÁLISIS ESTRUCTURAL Y TERMODINÁMICO}\\[8pt]
+      \textbf{Estado:}\ << estado_global_badge >>\\[6pt]
+      \scriptsize\color{AMSlate}<< resumen_ejecutivo >>
+    \end{minipage}%
+    \hfill
+    \begin{minipage}[c]{0.30\textwidth}
+      \raggedleft
+      {\scriptsize\bfseries\color{AMSlate}ÍNDICE DE ANOMALÍA ($\Delta A$)}\\[4pt]
+      {\fontsize{32}{36}\selectfont\bfseries\color{AMPrimary}<< indice_anomalia >>}
+    \end{minipage}
+  };
+\end{tikzpicture}
+
+\vspace{1cm}
+
+% --- Pie de portada ---
+\begin{center}
+  \large\color{AMSlate}
+  Generado por \textbf{probe\textcolor{redtex}{.tex}} --- Una herramienta de diagnóstico de INVARIANT.
+\end{center}
+
+\newpage
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  TABLA DE CONTENIDOS
+% ────────────────────────────────────────────────────────────────────────────
+{
+  \hypersetup{linkcolor=AMSecondary}
+  \tableofcontents
+}
+\newpage
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  SECCIÓN 1 --- PROCESAMIENTO CENTRAL (CPU)
+% ════════════════════════════════════════════════════════════════════════════
+\section{Procesamiento Central (CPU)}
+
+\begin{componentinfo}
+  \small
+  \textbf{Modelo:}\ \mv{<< cpu_model >>}\hfill
+  \textbf{Núcleos/Hilos:}\ \mv{<< cpu_cores >>/<< cpu_threads >>}\hfill
+  \textbf{TDP:}\ \mv{<< cpu_tdp >>\ W}\hfill
+  \textbf{Socket:}\ << cpu_socket >>
+\end{componentinfo}
+
+\vspace{0.5cm}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  1.1  Estabilidad Térmica Relativa
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{Estabilidad Térmica Relativa ($\Delta T_{\mathrm{recovery}}$)}
+
+\noindent % <--- BLOQUEA CUALQUIER SANGRÍA AUTOMÁTICA
+\begin{minipage}[t]{0.58\textwidth} % <--- ACHICAMOS UN 2% PARA DAR AIRE AL MEDIO
+  \vspace{0pt}
+  \begin{tikzpicture}[baseline=(current bounding box.north)]
+  \begin{axis}[
+    probe.tex,
+    width  = \linewidth,
+    height = 6.2cm,
+    xlabel = {Tiempo (s)},
+    ylabel = {Temperatura ($^\circ$C)},
+    title  = {Curva de Recuperación Térmica --- CPU},
+    xmin=0, xmax=120,
+    ymin=30, ymax=105,
+    xtick distance=20,
+    ytick distance=10,
+    extra y ticks      = {<< cpu_t_idle_plus5 >>},
+    extra y tick labels = {\empty}, % <--- SILENCIAMOS EL TEXTO EXTERNO
+    extra y tick style  = {
+      grid       = major,
+      grid style = {dashed, thick, color=StatusWarnMid}
+    },
+    clip = false,
+  ]
+    % -- Curva de temperatura medida --
+    \addplot[
+      color=AMPrimary, very thick, smooth, mark=none
+    ] coordinates { << datos_cpu_temp >> };
+    \addlegendentry{$T_{\text{cpu}}$ (medida)}
+
+    % -- Línea de T_idle de referencia --
+    \addplot[
+      color=StatusOKMid, thick, dashed, mark=none
+    ] coordinates { (0,<< cpu_t_idle >>) (120,<< cpu_t_idle >>) };
+    \addlegendentry{$T_{\text{idle}}$ = << cpu_t_idle >>$^\circ$C}
+
+    % -- Banda de peligro TjMax (zona roja translúcida) --
+    \addplot[
+      fill=StatusCrit, fill opacity=0.10, draw=none
+    ] coordinates { (0,<< cpu_tjmax >>) (120,<< cpu_tjmax >>) (120,110) (0,110) }
+    \closedcycle;
+
+    % -- Nodo TjMax --
+    \node[
+      anchor=west, font=\tiny\bfseries, color=StatusCrit
+    ] at (axis cs:2, << cpu_tjmax >>+2) {TjMax (<< cpu_tjmax >>$^\circ$C)};
+
+    % -- NUEVO NODO: T_idle + 5 (Flotando adentro del gráfico) --
+    \node[
+      anchor=south west, font=\tiny\bfseries, color=StatusWarn
+    ] at (axis cs:2, << cpu_t_idle_plus5 >>) {$T_{\text{idle}}+5^\circ$};
+
+  \end{axis}
+  \end{tikzpicture}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.39\textwidth} % <--- DAMOS UN 2% MÁS DE ANCHO A LA TABLA
+  \vspace{0pt}
+  \small
+  \begin{tabularx}{\linewidth}{@{}X r@{}}
+    \toprule
+    \thcell{Parámetro} & \thcell{Valor} \\
+    \midrule
+    $T_{\max}$ bajo carga        & \mv{<< cpu_t_max >>$^\circ$C} \\
+    \rowalt
+    $T_{\text{idle}}$ medida     & \mv{<< cpu_t_idle >>$^\circ$C} \\
+    $\Delta T_{\text{recovery}}$ & \mv{<< cpu_delta_t >>$^\circ$C} \\
+    \rowalt
+    Tiempo de recuperación       & \mv{<< cpu_recovery_time >>\ s} \\
+    Límite TjMax                 & \mv{<< cpu_tjmax >>$^\circ$C} \\
+    \rowalt
+    Pasta térmica (estimada)     & << cpu_tim_status >> \\
+    \bottomrule
+  \end{tabularx}
+
+  \vspace{0.5cm}
+
+  [% if cpu_thermal_status == "ok" %]
+  \begin{amboxok}{Estabilidad Térmica}
+    \scriptsize Recuperación dentro del margen.\\
+    $\Delta T =\ $\mv{<< cpu_delta_t >>$^\circ$C} (umbral: 15$^\circ$C)
+  \end{amboxok}
+  [% elif cpu_thermal_status == "warn" %]
+  \begin{amboxwarn}{Disipación Marginal}
+    \scriptsize Tiempo de recuperación elevado.\\
+    Verificar pasta térmica y ventilador.
+  \end{amboxwarn}
+  [% else %]
+  \begin{amboxcrit}{Fallo Térmico Detectado}
+    \scriptsize $\Delta T$ supera umbral seguro.\\
+    Intervención inmediata requerida.
+  \end{amboxcrit}
+  [% endif %]
+\end{minipage}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  1.2  Frecuencia de Throttling y Estabilidad de P-States
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{Frecuencia de Throttling y Estabilidad de P-States}
+
+\begin{tabularx}{\linewidth}{@{} X r r r @{}}
+  \toprule
+  \thcell{Modo de Operación} &
+  \thcell{Reloj Base (MHz)} &
+  \thcell{Reloj Sostenido (MHz)} &
+  \thcell{Desviación} \\
+  \midrule
+  P0 --- Máximo rendimiento  & \mv{<< cpu_base_p0 >>} & << cpu_sust_p0 >> & << cpu_dev_p0 >>\% \\
+  \rowalt
+  P1 --- Balanceado          & \mv{<< cpu_base_p1 >>} & << cpu_sust_p1 >> & << cpu_dev_p1 >>\% \\
+  P2 --- Ahorro de energía   & \mv{<< cpu_base_p2 >>} & << cpu_sust_p2 >> & << cpu_dev_p2 >>\% \\
+  \rowalt
+  Throttling térmico (TJ90)  & ---                    & << cpu_throttle_freq >> & --- \\
+  \bottomrule
+\end{tabularx}
+
+\vspace{0.3cm}
+
+\begin{minipage}[t]{0.48\linewidth}
+  \vspace{0pt} % <--- ANCLA INVISIBLE
+  \small
+  \textbf{Eventos de throttling:}\ \mv{<< cpu_throttle_events >>}\\
+  \textbf{Duración acumulada:}\ \mv{<< cpu_throttle_dur >>\ ms}\\
+  \textbf{Causa principal:}\ << cpu_throttle_cause >>
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\linewidth}
+  \vspace{0pt} % <--- ANCLA INVISIBLE
+  [% if cpu_throttle_events == 0 %]
+  \begin{amboxok}{Sin Throttling}
+    \scriptsize Frecuencia plena sostenida durante toda la prueba de carga.
+  \end{amboxok}
+  [% else %]
+  \begin{amboxwarn}{Throttling Detectado}
+    \scriptsize \mv{<< cpu_throttle_events >>} evento(s). Causa: << cpu_throttle_cause >>
+  \end{amboxwarn}
+  [% endif %]
+\end{minipage}
+
+\vspace{0.6cm}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  1.3  Machine Check Exceptions (MCE)
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{Machine Check Exceptions (MCE)}
+
+[% if mce_count == 0 %]
+\begin{amboxok}{Sin Errores MCE Detectados}
+  \small
+  No se registraron Machine Check Exceptions en el log del kernel.\\[3pt]
+  \textbf{Bancos MCE escaneados:}\ << mce_banks_scanned >>\quad
+  \textbf{Última verificación:}\ << mce_last_check >>
+\end{amboxok}
+[% else %]
+\begin{amboxcrit}{Errores MCE Detectados --- Fallo de Hardware Probable}
+  \small
+  Se detectaron \mv{<< mce_count >>} Machine Check Exception(s).\\[6pt]
+  \begin{tabularx}{\linewidth}{@{} c X X l @{}}
+    \toprule
+    \rowcolor{StatusCritBg}
+    \textbf{Banco} & \textbf{MCi\_STATUS} & \textbf{Tipo de Error} & \textbf{Timestamp} \\
+    \midrule
+    << mce_tabla_filas >>
+    \bottomrule
+  \end{tabularx}\\[4pt]
+  \textbf{Recomendación:}\ << mce_recomendacion >>
+\end{amboxcrit}
+[% endif %]
+
+\newpage
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  SECCIÓN 2 --- PROCESAMIENTO GRÁFICO (GPU)
+% ════════════════════════════════════════════════════════════════════════════
+\section{Procesamiento Gráfico (GPU)}
+
+\begin{componentinfo}
+  \small
+  \textbf{GPU:}\ \mv{<< gpu_model >>}\hfill
+  \textbf{VRAM:}\ \mv{<< gpu_vram_total >>\ GB}\ (<< gpu_vram_type >>)\hfill
+  \textbf{Driver:}\ << gpu_driver_version >>\hfill
+  \textbf{Bus:}\ PCIe\ << gpu_pcie_gen >>\ x<< gpu_pcie_width >>
+\end{componentinfo}
+
+\vspace{0.5cm}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  2.1  Delta de Temperatura del Hotspot
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{Delta de Temperatura del Hotspot ($\Delta T_{\mathrm{hotspot}}$)}
+
+\begin{center}
+\begin{tikzpicture}
+\begin{axis}[
+  probe.tex,
+  xbar,
+  width  = 0.88\linewidth,
+  height = 4.8cm,
+  xlabel = {Temperatura ($^\circ$C)},
+  symbolic y coords = {Hotspot,Edge},
+  ytick  = data,
+  yticklabel style = {font=\small\bfseries, color=AMSlate},
+  xmin=0, xmax=125,
+  xtick distance=20,
+  title = {Temperatura GPU: $T_{\text{edge}}$ vs $T_{\text{hotspot}}$},
+  nodes near coords,
+  nodes near coords style = {
+    font=\scriptsize\bfseries, color=AMText,
+    xshift=4pt
+  },
+  nodes near coords align = {horizontal},
+  extra x ticks      = {<< gpu_temp_limit >>},
+  extra x tick labels = {Límite \mv{<< gpu_temp_limit >>$^\circ$C}},
+  extra x tick style  = {
+    grid       = major,
+    grid style = {dashed, very thick, color=StatusCrit, opacity=0.7},
+    tick label style = {
+      color=StatusCrit, font=\scriptsize\bfseries,
+      rotate=90, anchor=south east, yshift=4pt
+    }
+  },
+  legend pos = south east,
+]
+  % -- Barra T_edge --
+  \addplot[fill=AMSlate, draw=AMSecondary, fill opacity=0.85]
+    coordinates { (<< gpu_t_edge >>,Edge) };
+  \addlegendentry{$T_{\text{edge}}$ = << gpu_t_edge >>$^\circ$C}
+
+  % -- Barra T_hotspot --
+  \addplot[fill=AMSecondary, draw=AMPrimary, fill opacity=0.85]
+    coordinates { (<< gpu_t_hotspot >>,Hotspot) };
+  \addlegendentry{$T_{\text{hotspot}}$ = << gpu_t_hotspot >>$^\circ$C}
+
+\end{axis}
+\end{tikzpicture}
+\end{center}
+
+\noindent\small
+$\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu_delta_t_hotspot >>$^\circ$C}
+\hspace{1cm}
+[% if gpu_hotspot_status == "ok" %]
+\badgeok\ Delta dentro del rango normal ($<$20$^\circ$C)
+[% elif gpu_hotspot_status == "warn" %]
+\badgewarn\ Delta elevado --- verificar pasta térmica de GPU.
+[% else %]
+\badgefail\ Delta crítico --- posible degradación de TIM o problema en die.
+[% endif %]
+
+\vspace{0.5cm}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  2.2  Integridad de VRAM
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{Integridad de VRAM}
+
+\begin{tabularx}{\linewidth}{@{} X c c c c @{}}
+  \toprule
+  \thcell{Prueba de Memoria} & \thcell{Tamaño} &
+  \thcell{Patrón} & \thcell{Errores} & \thcell{Estado} \\
+  \midrule
+  Escritura/Lectura secuencial & \mv{<< gpu_vram_total >>\ GB} & \texttt{0xDEADBEEF} &
+    \mv{<< gpu_vram_seq_errors >>} &
+    [% if gpu_vram_seq_errors == 0 %]\badgeok[% else %]\badgefail[% endif %] \\
+  \rowalt
+  Patrón de bits aleatorio     & \mv{<< gpu_vram_total >>\ GB} & Random &
+    \mv{<< gpu_vram_rand_errors >>} &
+    [% if gpu_vram_rand_errors == 0 %]\badgeok[% else %]\badgefail[% endif %] \\
+  Stress combinado (30 s)      & \mv{<< gpu_vram_stress_gb >>\ GB} & Mixed &
+    \mv{<< gpu_vram_stress_errors >>} &
+    [% if gpu_vram_stress_errors == 0 %]\badgeok[% else %]\badgefail[% endif %] \\
+  \rowalt
+  Conteo ECC corregibles       & --- & --- & \mv{<< gpu_ecc_correctable >>} &
+    [% if gpu_ecc_correctable == 0 %]\badgeok[% else %]\badgewarn[% endif %] \\
+  \bottomrule
+\end{tabularx}
+
+\vspace{0.5cm}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  2.3  Estabilidad del Enlace PCIe y Errores AER
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{Estabilidad del Enlace PCIe y Errores AER}
+
+\begin{minipage}[t]{0.56\linewidth}
+  \begin{tabularx}{\linewidth}{@{} X c c @{}}
+    \toprule
+    \thcell{Parámetro} & \thcell{Soportado} & \thcell{Activo} \\
+    \midrule
+    Generación PCIe        & Gen<< gpu_pcie_gen_max >>   & \mv{Gen<< gpu_pcie_gen_active >>} \\
+    \rowalt
+    Ancho de banda (lanes) & x<< gpu_pcie_lanes_max >>   & \mv{x<< gpu_pcie_lanes_active >>} \\
+    Ancho de banda (GB/s)  & << gpu_pcie_bw_max >>       & \mv{<< gpu_pcie_bw_active >>} \\
+    \rowalt
+    Errores AER corregibles & ---                         & \mv{<< gpu_aer_correctable >>} \\
+    Errores AER fatales     & ---                         & \mv{<< gpu_aer_fatal >>} \\
+    \bottomrule
+  \end{tabularx}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.41\linewidth}
+  [% if gpu_pcie_lanes_active == gpu_pcie_lanes_max and gpu_aer_fatal == 0 %]
+  \begin{amboxok}{PCIe Estable}
+    \scriptsize Enlace en capacidad máxima.\\
+    Sin errores AER fatales.
+  \end{amboxok}
+  [% elif gpu_aer_fatal > 0 %]
+  \begin{amboxcrit}{Errores AER Fatales}
+    \scriptsize \mv{<< gpu_aer_fatal >>} error(es) AER fatal(es).\\
+    Posible fallo en slot o conector.
+  \end{amboxcrit}
+  [% else %]
+  \begin{amboxwarn}{Enlace PCIe Degradado}
+    \scriptsize Lanes activos: x<< gpu_pcie_lanes_active >>\\
+    (esperado: x<< gpu_pcie_lanes_max >>). Revisar slot.
+  \end{amboxwarn}
+  [% endif %]
+\end{minipage}
+
+\newpage
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  SECCIÓN 3 --- ALMACENAMIENTO NO VOLÁTIL (SSD/NVMe)
+% ════════════════════════════════════════════════════════════════════════════
+\section{Almacenamiento No Volátil (SSD/NVMe)}
+
+\begin{componentinfo}
+  \small
+  \textbf{Dispositivo:}\ \texttt{<< nvme_device >>}\hfill
+  \textbf{Modelo:}\ \mv{<< nvme_model >>}\hfill
+  \textbf{Capacidad:}\ \mv{<< nvme_capacity >>\ GB}\hfill
+  \textbf{FW:}\ << nvme_firmware >>\\
+  \textbf{TBW restante:}\ \mv{<< nvme_tbw_remaining >>\ TB}\ de\ << nvme_tbw_rated >>\ TB\hfill
+  \textbf{Horas de uso:}\ \mv{<< nvme_hours >>\ h}
+\end{componentinfo}
+
+\vspace{0.5cm}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  3.1  Distribución de Latencia de Cola I/O (Histograma Logarítmico)
+% ────────────────────────────────────────────────────────────────────────────
+%
+%  DISEÑO ANTI-CRASH:
+%    - ymin=1 : evita log(0) en el eje Y si algún bucket tiene cero ops.
+%    - symbolic x coords usa identificadores limpios (b0..b9) para no
+%      inyectar sintaxis matematica dentro del argumento de pgfplots.
+%    - xticklabels aplica el formato bonito por separado.
+%    - Cada coordenada usa guardia Jinja2: si lat_bN == 0 se inyecta 1.
+%
+\subsection{Distribución de Latencia de Cola I/O (Histograma Logarítmico)}
+
+\begin{center}
+\begin{tikzpicture}
+\begin{axis}[
+  probe.tex,
+  width      = 0.94\linewidth,
+  height     = 6.5cm,
+  ybar,
+  bar width  = 14pt,
+  xlabel     = {Latencia ($\mu$s)},
+  ylabel     = {Operaciones (escala log)},
+  ymode      = log,
+  ymin       = 1,
+  log origin = infty,
+  title      = {Histograma de Latencia I/O --- Distribución por Bucket},
+  xtick      = data,
+  xticklabel style = {font=\scriptsize, rotate=40, anchor=east},
+  symbolic x coords = {b0,b1,b2,b3,b4,b5,b6,b7,b8,b9},
+  xticklabels = {
+    ${<}1$,$1{-}2$,$2{-}4$,$4{-}8$,$8{-}16$,
+    $16{-}32$,$32{-}64$,$64{-}128$,$128{-}256$,${>}256$
+  },
+  nodes near coords,
+  nodes near coords style = {
+    font=\tiny\bfseries, color=AMText,
+    rotate=80, anchor=west
+  },
+  enlarge x limits = 0.07,
+  legend pos = north east,
+]
+  \addplot[
+    fill=AMSlate, draw=AMPrimary, fill opacity=0.82
+  ] coordinates {
+    (b0,[% if lat_b0 == 0 %]1[% else %]<< lat_b0 >>[% endif %])
+    (b1,[% if lat_b1 == 0 %]1[% else %]<< lat_b1 >>[% endif %])
+    (b2,[% if lat_b2 == 0 %]1[% else %]<< lat_b2 >>[% endif %])
+    (b3,[% if lat_b3 == 0 %]1[% else %]<< lat_b3 >>[% endif %])
+    (b4,[% if lat_b4 == 0 %]1[% else %]<< lat_b4 >>[% endif %])
+    (b5,[% if lat_b5 == 0 %]1[% else %]<< lat_b5 >>[% endif %])
+    (b6,[% if lat_b6 == 0 %]1[% else %]<< lat_b6 >>[% endif %])
+    (b7,[% if lat_b7 == 0 %]1[% else %]<< lat_b7 >>[% endif %])
+    (b8,[% if lat_b8 == 0 %]1[% else %]<< lat_b8 >>[% endif %])
+    (b9,[% if lat_b9 == 0 %]1[% else %]<< lat_b9 >>[% endif %])
+  };
+  \addlegendentry{Frecuencia de operaciones}
+
+  % -- Línea de umbral P99 (bucket b7 = 64-128 µs) --
+  \addplot[
+    color=StatusWarn, dashed, ultra thick, mark=none, forget plot
+  ] coordinates {
+    (b7, 10) (b7, 1000000)
+  };
+  \node[
+    color=StatusWarn, font=\tiny\bfseries, rotate=90, anchor=south
+  ] at (axis cs:b7, 8000) {Umbral P99};
+
+\end{axis}
+\end{tikzpicture}
+\end{center}
+
+\noindent\small
+\textbf{P50:}\ \mv{<< nvme_lat_p50 >>\ $\mu$s}\quad
+\textbf{P95:}\ \mv{<< nvme_lat_p95 >>\ $\mu$s}\quad
+\textbf{P99:}\ \mv{<< nvme_lat_p99 >>\ $\mu$s}\quad
+\textbf{P99.9:}\ \mv{<< nvme_lat_p999 >>\ $\mu$s}
+
+\vspace{0.5cm}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  3.2  WAF y Métricas de Desgaste NVMe (SMART Extended)
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{WAF y Métricas de Desgaste NVMe (SMART Extended)}
+
+\begin{tabularx}{\linewidth}{@{} X r r c @{}}
+  \toprule
+  \thcell{Métrica NVMe} & \thcell{Valor Actual} &
+  \thcell{Umbral} & \thcell{Estado} \\
+  \midrule
+  Write Amplification Factor (WAF) & \mv{<< nvme_waf >>} & $\leq 3.0$ &
+    [% if nvme_waf_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  \rowalt
+  LBA escritos (host)         & \mv{<< nvme_lba_written >>\ TB}  & --- & --- \\
+  NAND escritas (total)       & \mv{<< nvme_nand_written >>\ TB} & --- & --- \\
+  \rowalt
+  Bloques NAND defectuosos    & \mv{<< nvme_bad_blocks >>}   & $\leq 50$ &
+    [% if nvme_bad_blocks_ok %]\badgeok[% else %]\badgefail[% endif %] \\
+  Spare blocks restantes      & \mv{<< nvme_spare_blocks >>} & $\geq 10$ &
+    [% if nvme_spare_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  \rowalt
+  Errores ECC corregibles     & \mv{<< nvme_ecc_errors >>}   & $< 100$ &
+    [% if nvme_ecc_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Temperatura máx. registrada & \mv{<< nvme_t_max >>$^\circ$C} & $< 70^\circ$C &
+    [% if nvme_temp_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  \rowalt
+  Porcentaje de vida restante & \mv{<< nvme_life_pct >>\%} & $\geq 20\%$ &
+    [% if nvme_life_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  \bottomrule
+\end{tabularx}
+
+\newpage
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  SECCIÓN 4 --- MEMORIA PRINCIPAL (RAM)
+% ════════════════════════════════════════════════════════════════════════════
+\section{Memoria Principal (RAM)}
+
+\begin{componentinfo}
+  \small
+  \textbf{Total:}\ \mv{<< ram_total_gb >>\ GB}\hfill
+  \textbf{Tipo:}\ \mv{<< ram_type >>-<< ram_speed >>}\hfill
+  \textbf{Slots:}\ \mv{<< ram_slots_used >>/<< ram_slots_total >>}\hfill
+  \textbf{Dual Channel:}\ [% if ram_dual_channel %]\badgeok\ Activo[% else %]\badgefail\ Inactivo[% endif %]
+\end{componentinfo}
+
+\vspace{0.5cm}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  4.1  Tasa de Corrección EDAC / Bit Flipping
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{Tasa de Corrección EDAC / Bit Flipping}
+
+\begin{minipage}[t]{0.54\linewidth}
+  \vspace{0pt} % <--- ANCLA INVISIBLE
+  \begin{tabularx}{\linewidth}{@{} X c c c @{}}
+    \toprule
+    \thcell{Módulo DIMM} & \thcell{Tamaño} &
+    \thcell{Errores} & \thcell{Estado} \\
+    \midrule
+    << ram_edac_filas >>
+    \bottomrule
+    \multicolumn{2}{@{}l}{\scriptsize\textit{Total errores detectados:}} &
+    \multicolumn{2}{c@{}}{\mv{<< ram_total_errors >>}} \\
+  \end{tabularx}
+
+  \vspace{0.4cm}
+  \small
+  \textbf{Velocidad efectiva:}\ \mv{<< ram_speed_effective >>\ MHz}\\
+  \textbf{Latencia CAS medida:}\ \mv{<< ram_cas_ns >>\ ns}\\
+  \textbf{Método de prueba:}\ \texttt{<< ram_test_method >>}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.43\linewidth}
+  \vspace{0pt} % <--- ANCLA INVISIBLE
+  % -- Gráfico de pastel (donut) --- Integridad de RAM --
+  \begin{center}
+  \begin{tikzpicture}
+    % Ángulo de la porción íntegra (inyectado por Python)
+    % start: 90° (12h) en sentido antihorario
+    \pgfmathsetmacro{\intAngle}{<< ram_pie_angle >>}
+    \pgfmathsetmacro{\failStart}{90 - \intAngle}
+
+    % -- Sector íntegro (verde) --
+    \fill[StatusOKMid, opacity=0.9]
+      (0,0) -- (90:1.85cm)
+      arc[start angle=90, delta angle=-\intAngle, radius=1.85cm]
+      -- cycle;
+
+    % -- Sector defectuoso (rojo, si existe) --
+    \fill[StatusCritMid, opacity=0.9]
+      (0,0) -- (\failStart:1.85cm)
+      arc[start angle=\failStart, delta angle=-(360-\intAngle), radius=1.85cm]
+      -- cycle;
+
+    % -- Anillo interior (efecto donut) --
+    \fill[AMCanvas] (0,0) circle (1.15cm);
+
+    % -- Texto central --
+    \node[align=center] at (0,0) {%
+      \textcolor{StatusOK}{\bfseries\small << ram_integrity_pct >>\%}\\[-1pt]
+      \textcolor{AMSlate}{\tiny Íntegra}%
+    };
+
+    % -- Bordes --
+    \draw[AMBorder, line width=0.4pt] (0,0) circle (1.85cm);
+    \draw[AMBorder, line width=0.4pt] (0,0) circle (1.15cm);
+
+    % -- Leyenda --
+    \node[right, font=\scriptsize, anchor=west] at (2.05cm,  0.45cm)
+      {\textcolor{StatusOKMid}{$\blacksquare$}\ Íntegra\ (<< ram_integrity_pct >>\%)};
+    \node[right, font=\scriptsize, anchor=west] at (2.05cm, -0.10cm)
+      {\textcolor{StatusCritMid}{$\blacksquare$}\ Defectos\ (<< ram_fail_pct >>\%)};
+
+    % -- Título --
+    \node[above, font=\small\bfseries, color=AMPrimary]
+      at (0, 2.15cm) {Integridad de RAM};
+  \end{tikzpicture}
+  \end{center}
+  \end{minipage}
+
+  \vspace{0.6cm}
+
+  [% if ram_total_errors == 0 %]
+  \begin{amboxok}{RAM Sin Errores}
+    \scriptsize Todos los módulos DIMM pasaron las pruebas de integridad.
+  \end{amboxok}
+  [% else %]
+  \begin{amboxcrit}{Errores de Memoria Detectados}
+    \scriptsize \mv{<< ram_total_errors >>} error(es) en EDAC/memtester.\\
+    Aislar y reemplazar módulo defectuoso.
+  \end{amboxcrit}
+  [% endif %]
+
+\newpage
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  SECCIÓN 5 --- PLACA BASE Y SISTEMA DE ENERGÍA
+% ════════════════════════════════════════════════════════════════════════════
+\section{Placa Base y Sistema de Energía}
+
+\begin{componentinfo}
+  \small
+  \textbf{Placa Base:}\ \mv{<< mobo_manufacturer >>\ << mobo_model >>}\hfill
+  \textbf{Chipset:}\ << mobo_chipset >>\hfill
+  \textbf{BIOS/UEFI:}\ << bios_version >>\ (<< bios_date >>)
+\end{componentinfo}
+
+\vspace{0.5cm}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  5.1  Caída de Voltaje bajo Carga (V_droop) y VRM
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{Caída de Voltaje bajo Carga ($V_{\mathrm{droop}}$) y VRM}
+
+\begin{tikzpicture}
+\begin{axis}[
+  probe.tex,
+  width  = 0.92\linewidth,
+  height = 5.8cm,
+  xlabel = {Tiempo (s)},
+  ylabel = {Voltaje (V)},
+  title  = {VRM: Voltaje Solicitado (VID) vs Voltaje Entregado (Medido)},
+  xmin=0, xmax=60,
+  ymin=0.80, ymax=1.55,
+  xtick distance=10,
+  ytick distance=0.05,
+  legend pos=south east,
+]
+  % -- Zona de tolerancia ±5% (relleno verde translúcido) --
+  \addplot[
+    fill=StatusOKMid, fill opacity=0.07, draw=none, forget plot
+  ] coordinates {
+    (0,  << vrm_tol_low >>)  (60, << vrm_tol_low >>)
+    (60, << vrm_tol_high >>) (0,  << vrm_tol_high >>)
+  } \closedcycle;
+
+  % -- Voltaje solicitado (VID) --
+  \addplot[
+    color=AMSlate, thick, dashed, mark=none
+  ] coordinates { << datos_vrm_vid >> };
+  \addlegendentry{$V_{\text{solicitado}}$ (VID)}
+
+  % -- Voltaje entregado (medido por sensor) --
+  \addplot[
+    color=AMPrimary, thick, smooth, mark=none
+  ] coordinates { << datos_vrm_medido >> };
+  \addlegendentry{$V_{\text{entregado}}$ (sensor)}
+
+  % -- Anotación del droop máximo --
+  \draw[->, color=AMSlate, thin]
+    (axis cs:<< vrm_droop_t >>, << vrm_droop_v >>)
+    -- (axis cs:<< vrm_droop_t >>+8, << vrm_droop_v >>-0.04)
+    node[right, font=\tiny, color=AMSlate] {%
+      $V_{\text{droop}}$\mv{= << vrm_vdroop_max >>\ V}%
+    };
+
+\end{axis}
+\end{tikzpicture}
+
+\vspace{0.3cm}
+\noindent\small
+\textbf{$V_{\text{droop}}$ máx.:}\ \mv{<< vrm_vdroop_max >>\ V}\quad
+\textbf{Temperatura VRM:}\ \mv{<< vrm_temp >>$^\circ$C}\quad
+\textbf{Fases VRM:}\ \mv{<< vrm_phases >>}\quad
+\textbf{Estado:}\ \mv{<< vdroop_status >>}
+
+\vspace{0.3cm}
+[% if vrm_status == "ok" %]
+\begin{amboxok}{VRM Estable}
+  \scriptsize Caída de voltaje dentro del margen de tolerancia ($\pm$5\%). Sin riesgo de inestabilidad.
+\end{amboxok}
+[% elif vrm_status == "warn" %]
+\begin{amboxwarn}{Caída de Voltaje Moderada}
+  \scriptsize $V_{\text{droop}}$ de \mv{<< vrm_vdroop_max >>\ V} detectado. Verificar fases VRM y capacitores de desacople.
+\end{amboxwarn}
+[% else %]
+\begin{amboxcrit}{VRM Inestable --- Caída Excesiva}
+  \scriptsize Caída de voltaje fuera de especificaciones. Riesgo de crashes y daño al procesador. Reemplazar VRM.
+\end{amboxcrit}
+[% endif %]
+
+\vspace{0.6cm}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  5.2  Estado de Batería (condicional --- solo laptops)
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{Estado de Batería (si aplica)}
+
+[% if battery_present %]
+
+\begin{minipage}[t]{0.54\linewidth}
+  \begin{tabularx}{\linewidth}{@{} X r @{}}
+    \toprule
+    \thcell{Parámetro de Batería} & \thcell{Valor} \\
+    \midrule
+    Capacidad de diseño         & \mv{<< bat_design_cap >>\ mWh} \\
+    \rowalt
+    Capacidad actual (plena)    & \mv{<< bat_full_cap >>\ mWh} \\
+    Ciclos de carga             & \mv{<< bat_cycles >>} \\
+    \rowalt
+    Estado de salud (SoH)       & \mv{<< bat_soh >>\%} \\
+    Voltaje nominal             & \mv{<< bat_voltage_nom >>\ V} \\
+    \rowalt
+    Voltaje bajo carga          & \mv{<< bat_voltage_load >>\ V} \\
+    $\Delta V$ bajo carga       & \mv{<< bat_voltage_drop >>\ V} \\
+    \rowalt
+    Corriente de descarga       & \mv{<< bat_current_load >>\ mA} \\
+    Resistencia interna est.    & \mv{<< bat_resistance >>\ m$\Omega$} \\
+    \bottomrule
+  \end{tabularx}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.43\linewidth}
+  % -- Gauge de SoH (barra de rango TikZ) --
+  \begin{center}
+  \begin{tikzpicture}
+    % Constantes de la barra
+    \def\bw{4.6}    % ancho total (cm)
+    \def\bh{0.6}    % alto (cm)
+
+    % Fondo gris
+    \fill[AMBorder!60] (0,0) rectangle (\bw, \bh);
+
+    % Relleno de color según SoH (longitud pre-calculada por Python)
+    \fill[<< bat_gauge_color >>]
+      (0,0) rectangle (<< bat_gauge_fill >>, \bh);
+
+    % Divisores de zona (0-40%=critico, 40-70%=moderado, 70-100%=bueno)
+    \draw[white, line width=1.2pt] (1.84, 0) -- (1.84, \bh);  % 40%
+    \draw[white, line width=1.2pt] (3.22, 0) -- (3.22, \bh);  % 70%
+
+    % Indicador de posición actual
+    \draw[AMPrimary, very thick]
+      (<< bat_gauge_fill >>, -0.18) -- (<< bat_gauge_fill >>, \bh+0.18);
+    % Triángulo indicador
+    \fill[AMPrimary]
+      (<< bat_gauge_fill >>, \bh+0.18) --
+      ({<< bat_gauge_fill >>-0.12}, \bh+0.38) --
+      ({<< bat_gauge_fill >>+0.12}, \bh+0.38) -- cycle;
+
+    % Etiquetas de zona
+    \node[font=\tiny, color=StatusCrit]
+      at (0.92, -0.28) {Crítico};
+    \node[font=\tiny, color=StatusWarn]
+      at (2.53, -0.28) {Moderado};
+    \node[font=\tiny, color=StatusOK]
+      at (3.91, -0.28) {Bueno};
+
+    % Borde
+    \draw[AMSlate, line width=0.5pt] (0,0) rectangle (\bw, \bh);
+
+    % Valor de SoH
+    \node[above, font=\bfseries\small, color=AMPrimary]
+      at (\bw/2, \bh+0.55) {Estado de Salud (SoH): \mv{<< bat_soh >>\%}};
+
+    % Título
+    \node[above, font=\scriptsize, color=AMSlate]
+      at (\bw/2, \bh+1.0) {Resistencia interna est.: \mv{<< bat_resistance >>\ m$\Omega$}};
+  \end{tikzpicture}
+  \end{center}
+  \end{minipage}
+
+  \vspace{0.6cm}
+
+  [% if bat_soh >= 80 %]
+  \begin{amboxok}{Batería en Buen Estado}
+    \scriptsize SoH: \mv{<< bat_soh >>\%}. No requiere reemplazo.
+  \end{amboxok}
+  [% elif bat_soh >= 60 %]
+  \begin{amboxwarn}{Degradación Moderada}
+    \scriptsize SoH: \mv{<< bat_soh >>\%}. Considerar reemplazo próximo.
+  \end{amboxwarn}
+  [% else %]
+  \begin{amboxcrit}{Batería Muy Degradada}
+    \scriptsize SoH: \mv{<< bat_soh >>\%}. Reemplazo urgente recomendado.
+  \end{amboxcrit}
+  [% endif %]
+
+[% else %]
+\begin{amboxinfo}{Batería No Presente}
+  \scriptsize Este sistema no cuenta con batería interna (equipo de escritorio o batería no detectada en \texttt{/sys/class/power\_supply/}).
+\end{amboxinfo}
+[% endif %]
+
+\newpage
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  SECCIÓN 6 --- INTEGRIDAD DE BUS Y PERIFÉRICOS
+% ════════════════════════════════════════════════════════════════════════════
+\section{Integridad de Bus y Periféricos}
+
+
+% ────────────────────────────────────────────────────────────────────────────
+%  6.1  Integridad USB
+% ────────────────────────────────────────────────────────────────────────────
+\subsection{Integridad de Puertos USB}
+
+\begin{tabularx}{\linewidth}{@{} c c X c c c @{}}
+  \toprule
+  \thcell{Puerto} & \thcell{Versión} & \thcell{Controlador} &
+  \thcell{BW (Gbps)} & \thcell{Errores} & \thcell{Estado} \\
+  \midrule
+  << usb_tabla_filas >>
+  \bottomrule
+\end{tabularx}
+
+\vspace{0.5cm}
+
+\begin{minipage}[t]{0.48\linewidth}
+  \vspace{0pt} % <--- ANCLA INVISIBLE
+  \small\textbf{\color{AMPrimary}Resumen de Estado USB:}
+  \begin{itemize}[leftmargin=1.2em, itemsep=3pt, topsep=5pt]
+    \item \badgeok\ Puertos estables: \mv{<< usb_ok >>}
+    \item \badgewarn\ Puertos inestables: \mv{<< usb_warn >>}
+    \item \badgefail\ Puertos con fallo/corto: \mv{<< usb_fail >>}
+  \end{itemize}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\linewidth}
+  \vspace{0pt} % <--- ANCLA INVISIBLE
+  [% if usb_fail > 0 %]
+  \begin{amboxcrit}{Puerto(s) USB Defectuosos}
+    \scriptsize \mv{<< usb_fail >>} puerto(s) con fallos.\\
+    Revisar circuito de alimentación y fusibles USB.
+  \end{amboxcrit}
+  [% elif usb_warn > 0 %]
+  \begin{amboxwarn}{Inestabilidad USB}
+    \scriptsize \mv{<< usb_warn >>} puerto(s) con errores intermitentes.\\
+    Verificar voltaje VBUS y controlador.
+  \end{amboxwarn}
+  [% else %]
+  \begin{amboxok}{Todos los Puertos USB Operativos}
+    \scriptsize Sin errores detectados en ningún puerto USB.
+  \end{amboxok}
+  [% endif %]
+\end{minipage}
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  TABLA RESUMEN GLOBAL + RECOMENDACIONES
+% ════════════════════════════════════════════════════════════════════════════
+\vspace{0.8cm}
+\sectionrule
+
+\begin{center}
+  {\color{AMPrimary}\large\bfseries Resumen Global del Diagnóstico}
+\end{center}
+\sectionrule
+
+\vspace{0.2cm}
+
+\begin{tabularx}{\linewidth}{@{} X c c l @{}}
+  \toprule
+  \thcell{Sub-Sistema} & \thcell{$\Delta A$ Parcial} &
+  \thcell{Estado Clínico} & \thcell{Anotación} \\
+  \midrule
+  Procesamiento Central (CPU)   & \textbf{+<< cpu_anomalia >>}  & << cpu_estado_badge >>  & --- \\
+  \rowalt
+  Procesamiento Gráfico (GPU)   & \textbf{+<< gpu_anomalia >>}  & << gpu_estado_badge >>  & --- \\
+  Almacenamiento NVMe/SSD       & \textbf{+<< nvme_anomalia >>} & << nvme_estado_badge >> & --- \\
+  \rowalt
+  Memoria Principal (RAM)       & \textbf{+<< ram_anomalia >>}  & << ram_estado_badge >>  & --- \\
+  Placa Base / VRM Energía      & \textbf{+<< mobo_anomalia >>} & << mobo_estado_badge >> & --- \\
+  \rowalt
+  Bus / Periféricos (USB)       & \textbf{+<< usb_anomalia >>}  & << usb_estado_badge >>  & --- \\
+  \midrule
+  \thcell{ÍNDICE DE ANOMALÍA GLOBAL} &
+  \thcell{<< indice_anomalia >>} &
+  \thcell{<< estado_global_badge >>} &
+  \thcell{---} \\
+  \bottomrule
+\end{tabularx}
+
+\vspace{0.6cm}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback   = AMLight,
+  colframe  = AMPrimary,
+  boxrule   = 0.8pt,
+  arc       = 0pt,
+  title     = {\bfseries Directivas de Intervención},
+  coltitle  = white,
+  attach boxed title to top left={yshift=-2mm, xshift=8mm},
+  boxed title style={colback=AMPrimary, arc=0pt, boxrule=0pt},
+  left=10pt, right=10pt, top=12pt, bottom=8pt
+]
+  \small
+  \begin{enumerate}[leftmargin=*, itemsep=4pt, topsep=2pt]
+    << lista_recomendaciones >>
+  \end{enumerate}
+\end{tcolorbox}
+
+
+% ════════════════════════════════════════════════════════════════════════════
+%  PIE DE DOCUMENTO --- FIRMA Y SELLO TÉCNICO
+% ════════════════════════════════════════════════════════════════════════════
+\vspace{0.8cm}
+\sectionrule
+
+\begin{minipage}[t]{0.48\linewidth}
+  \small\color{AMSlate}
+  \textbf{Emitido por:}\ << taller_nombre >>\\
+  \textbf{Técnico certificado:}\ << tecnico_nombre >>\\
+  \textbf{Fecha de diagnóstico:}\ << fecha_reporte >>\\
+  \textbf{Duración del análisis:}\ << duracion_analisis >>
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\linewidth}
+  \raggedright\small\color{AMSlate}
+  \textbf{Plataforma:}\ probe\textcolor{redtex}{.tex} v<< version >>\\
+  \textbf{Kernel Linux:}\ << kernel_version >>\\
+  \textbf{ID de Reporte:}\ \texttt{<< report_id >>}\\
+  \textbf{Hash de integridad (SHA-256):}\ \texttt{\tiny << report_hash >>}
+\end{minipage}
+
+\vspace{0.5cm}
+
+\begin{center}
+  \scriptsize\color{AMSlate}
+  Este informe es emitido con fines diagnósticos y de referencia técnica exclusivamente.\\
+  Los datos fueron recolectados de forma automatizada por probe\textcolor{redtex}{.tex}
+  en un entorno Live Linux offline controlado.\\[3pt]
+  \textcolor{AMBorder}{\rule{0.45\linewidth}{0.3pt}}
+\end{center}
+
+\end{document}

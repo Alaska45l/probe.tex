@@ -1,0 +1,26 @@
+### LICENSE
+
+```text
+probe.tex PROPRIETARY AND EVALUATION LICENSE
+
+Copyright (c) 2026 Alaska Elaina Gonzalez. All rights reserved.
+
+1. GRANT OF LICENSE
+Subject to the terms and conditions of this Agreement, Alaska Elaina Gonzalez ("Licensor") grants you ("Licensee") a limited, non-exclusive, non-transferable, and non-sublicensable license to use the probe.tex software ("Software") strictly for internal evaluation, testing, and non-commercial purposes.
+
+2. RESTRICTIONS
+Licensee shall not, and shall not permit any third party to:
+a) Use the Software for commercial purposes, including but not limited to providing paid hardware diagnostic services, without obtaining a separate Commercial License from the Licensor.
+b) Modify, adapt, alter, translate, or create derivative works of the Software.
+c) Redistribute, encumber, sell, rent, lease, sublicense, or otherwise transfer rights to the Software.
+d) Reverse engineer, decompile, disassemble, or attempt to derive the source code of the Software, except to the extent such restriction is expressly prohibited by applicable law.
+e) Remove or alter any copyright, trademark, or other proprietary notices contained within the Software or the generated PDF reports.
+
+3. INTELLECTUAL PROPERTY
+The Software, including its structure, organization, code, LaTeX templates, and generated report formats, is the valuable trade secret and intellectual property of the Licensor. The Software is licensed, not sold. All rights not expressly granted to Licensee are reserved by the Licensor.
+
+4. TERMINATION
+This license is effective until terminated. Licensor may terminate this License at any time if Licensee fails to comply with any term herein. Upon termination, Licensee must destroy all copies of the Software in their possession.
+
+5. DISCLAIMER OF WARRANTY
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. THE LICENSOR SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. ACTIVE BENCHMARKING TOOLS INCLUDED IN THIS SOFTWARE MAY STRESS HARDWARE COMPONENTS; THE LICENSOR IS NOT RESPONSIBLE FOR HARDWARE FAILURE OR DATA LOSS.
