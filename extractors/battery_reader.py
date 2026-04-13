@@ -68,6 +68,7 @@ stdlib únicamente: pathlib.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 from core.models import BatteryData
 
@@ -275,7 +276,7 @@ def _extract_current_ma(bat_dir: Path) -> int:
     return abs(raw) // 1_000
 
 
-def _estimate_resistance(v_nom: float, v_now: float, i_ma: int, status: str) -> float:
+def _estimate_resistance(v_nom: float, v_now: float, i_ma: int, status: str) -> Optional[float]:
     """
     Estimación de resistencia interna (mΩ).
 
@@ -286,16 +287,16 @@ def _estimate_resistance(v_nom: float, v_now: float, i_ma: int, status: str) -> 
       2. ΔV > 0 (batería realmente descargando, no cargando).
       3. status == "Discharging" (no calculable si está conectada a AC).
 
-    Honestidad forense: si las condiciones no se cumplen, devuelve 0.0.
+    Honestidad forense: si las condiciones no se cumplen, devuelve None.
     No se fabrica un valor de R_int.
 
     Returns
     -------
-    float — resistencia en mΩ, redondeada a 1 decimal. 0.0 si incalculable.
+    Optional[float] — resistencia en mΩ, redondeada a 1 decimal. None si incalculable.
     """
     delta_v = v_nom - v_now
     if status != "Discharging" or i_ma < _MIN_CURRENT_RESISTANCE_MA or delta_v <= 0.0:
-        return 0.0
+        return None
     i_amperes = i_ma / 1_000.0
     return round((delta_v / i_amperes) * 1_000.0, 1)
 
@@ -359,9 +360,13 @@ def extract_battery_data() -> BatteryData:
         # ── Capa 2: capacidad y SoH ──────────────────────────────────────
         design_cap, full_cap = _extract_capacity_mwh(bat_dir)
         soh    = _compute_soh(design_cap, full_cap)
-        cycles = _safe_int(_read_field(bat_dir, "cycle_count", "-1"))
-        if cycles == -1:
-            cycles = _safe_int(_read_field(bat_dir, "charge_control_cycle_count", "0"))
+        
+        _raw_cycles = _read_field(bat_dir, "cycle_count", "")
+        if _raw_cycles:
+            cycles: Optional[int] = _safe_int(_raw_cycles)
+        else:
+            _raw_alt = _read_field(bat_dir, "charge_control_cycle_count", "")
+            cycles = _safe_int(_raw_alt) if _raw_alt else None
 
         # ── Capa 3: voltaje y corriente ──────────────────────────────────
         v_nom, v_now, v_drop = _extract_voltage(bat_dir)
@@ -381,7 +386,7 @@ def extract_battery_data() -> BatteryData:
             bat_soh          = soh,
             bat_voltage_nom  = v_nom,
             bat_voltage_load = v_now,
-            bat_voltage_drop = v_drop,
+            bat_voltage_drop = v_drop if (status == "Discharging" and v_drop > 0.0) else None,
             bat_current_load = i_ma,
             bat_resistance   = resistance,
             bat_gauge_color  = gauge_color,

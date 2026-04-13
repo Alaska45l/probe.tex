@@ -306,7 +306,12 @@ def _eval_cpu(cpu: CPUData) -> SubsystemVector:
             r"si los errores son recurrentes post-microcode update."
         ))
 
-    if cpu.cpu_t_max > 0.0 and cpu.cpu_tjmax > 0 and cpu.cpu_t_max >= cpu.cpu_tjmax:
+    tjmax_breached: bool = (
+        cpu.cpu_t_max > 0.0
+        and cpu.cpu_tjmax > 0
+        and cpu.cpu_t_max >= cpu.cpu_tjmax
+    )
+    if tjmax_breached:
         delta_a += _DA_CPU_TJMAX_BREACH
         directives.append(_latex_item(
             "Sub-sistema CPU / Térmico (CRÍTICO)",
@@ -318,8 +323,9 @@ def _eval_cpu(cpu: CPUData) -> SubsystemVector:
     thermal_fail = (
         cpu.cpu_delta_t > _THR_CPU_DELTA_T_DISSIPATION
         or cpu.cpu_recovery_time > _THR_CPU_RECOVERY_S
+        or cpu.cpu_recovery_time < 0.0   # centinela: jamás recuperó
     )
-    if thermal_fail and delta_a < _DA_CPU_TJMAX_BREACH:
+    if thermal_fail and not tjmax_breached:
         delta_a += _DA_CPU_THERMAL_DISSIPATION
         directives.append(_latex_item(
             "Sub-sistema CPU / Disipación",
@@ -705,16 +711,15 @@ def _eval_battery(battery: BatteryData) -> SubsystemVector:
 
     Umbrales de ΔA
     --------------
-    WL > _THR_BAT_WEAR_DEGRADED (20 %) → ΔA += 15  (DEGRADED)
-      Las celdas han perdido más del 20 % de su capacidad nominal.
-      La autonomía se reduce notablemente bajo carga moderada.
+    WL > _THR_BAT_WEAR_CRITICAL (40 %) → ΔA += 50  → CRITICAL
+      Ciclo de vida comprometido. Riesgo de corte abrupto bajo cargas pico.
+      ΔA = 50 colapsa el estado directamente a CRITICAL (≥ _DA_GLOBAL_CRITICAL_FLOOR).
 
-    WL > _THR_BAT_WEAR_CRITICAL (40 %) → ΔA += 30  (CRITICAL)
-      Ciclo de vida comprometido. Riesgo de corte abrupto de tensión
-      bajo cargas pico. Reemplazo mandatorio para uso fiable.
+    WL ∈ (_THR_BAT_WEAR_DEGRADED, _THR_BAT_WEAR_CRITICAL] → ΔA += 15 → DEGRADED
+      Autonomía reducida. Intervención planificada recomendada.
 
-    Los dos umbrales son mutuamente excluyentes (se aplica el mayor
-    si WL > 40 %): ΔA += 30, no +=15+30.
+    Los umbrales son mutuamente excluyentes: si WL > 40%, solo se aplica
+    _DA_BAT_WEAR_CRITICAL (50), no la suma 15 + 50.
 
     Caso sin batería (escritorio)
     ------------------------------
@@ -806,7 +811,7 @@ def _eval_battery(battery: BatteryData) -> SubsystemVector:
     # No suma ΔA propio; es un dato informativo que enriquece la directiva.
     # R_int > 200 mΩ en una celda Li-ion típica indica degradación avanzada
     # del electrolito o del SEI (rango nominal: 50–150 mΩ).
-    if battery.bat_resistance > 200.0 and delta_a == 0:
+    if battery.bat_resistance is not None and battery.bat_resistance > 200.0 and delta_a == 0:
         # Solo reportar si aún no hay directiva de desgaste (para no redundar).
         directives.append(_latex_item(
             r"Sub-sistema Batería / Resistencia Interna",

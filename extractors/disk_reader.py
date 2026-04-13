@@ -47,7 +47,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from core.models import NVMeData
 
@@ -65,8 +65,8 @@ _SPARE_THRESHOLD:   int   = 10
 _BAD_BLK_THRESHOLD: int   = 50
 _ECC_THRESHOLD:     int   = 100
 _WAF_THRESHOLD:     float = 3.0
-_WAF_BASE:          float = 1.05
-_WAF_RANGE:         float = 0.15
+_WAF_SATA_NAND_WRITES_ID: Final[int] = 233   # Samsung 840+, muchos Toshiba/Kioxia
+_WAF_SATA_HOST_WRITES_ID: Final[int] = 241   # JEDEC EPD standard fallback
 
 _FIO_RUNTIME_S: int = 15     # duración del test fio en segundos
 
@@ -178,23 +178,44 @@ def _parse_health_log(smart: dict) -> dict[str, Any]:
 #  CAPA 4 — TBW, WAF Y ESCRITURAS NAND
 # ════════════════════════════════════════════════════════════════════════════
 
-def _calc_tbw_and_waf(
-    data_units_written: int,
-    percentage_used:    int,
-    capacity_gb:        int,
-) -> tuple[float, float, float, float, float]:
+def _calc_tbw(data_units_written: int, percentage_used: int,
+              capacity_gb: int) -> tuple[float, float, float]:
+    """
+    Retorna (lba_written_tb, rated_tbw, remaining_tbw).
+    WAF y nand_written NO se calculan aquí — requieren atributos vendedor.
+    """
     lba_written_tb = _uw_to_tb(data_units_written)
-    used_fraction  = max(0.0, min(1.0, percentage_used / 100.0))
-    waf            = round(_WAF_BASE + used_fraction * _WAF_RANGE, 3)
-    nand_written_tb = round(lba_written_tb * waf, 2)
-
     if percentage_used > 0:
         rated_tbw = round(lba_written_tb / (percentage_used / 100.0), 1)
     else:
         rated_tbw = round(capacity_gb * 0.5, 1)
-
     remaining_tbw = round(max(0.0, rated_tbw - lba_written_tb), 1)
-    return lba_written_tb, nand_written_tb, waf, rated_tbw, remaining_tbw
+    return lba_written_tb, rated_tbw, remaining_tbw
+
+def _extract_real_waf(smart: dict, lba_written_tb: float) -> tuple[float, float]:
+    """
+    Intenta extraer WAF real desde atributos SMART vendedor-específicos.
+    Retorna (waf, nand_written_tb). Retorna (0.0, 0.0) si no disponible.
+    Honestidad forense: cero fabricación.
+    """
+    # Intento 1: atributos SATA ID 233 (NAND escrito) y 241 (host escrito)
+    nand_raw = host_raw = 0
+    for attr in _get(smart, "ata_smart_attributes", "table", default=[]):
+        aid     = attr.get("id", 0)
+        raw_val = attr.get("raw", {}).get("value", 0)
+        if aid == _WAF_SATA_NAND_WRITES_ID and isinstance(raw_val, int):
+            nand_raw = raw_val
+        elif aid == _WAF_SATA_HOST_WRITES_ID and isinstance(raw_val, int):
+            host_raw = raw_val
+
+    if nand_raw > 0 and host_raw > 0 and host_raw >= 1:
+        waf           = round(nand_raw / host_raw, 3)
+        nand_tb       = _uw_to_tb(nand_raw * 32)   # unidad: 32 MB por unidad típica
+        return waf, nand_tb
+
+    # Intento 2: NVMe vendor log (no estándar — imposible sin nvme-cli específico)
+    # No hay atributo universal → honestidad: sin dato.
+    return 0.0, 0.0
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -207,9 +228,9 @@ def _parse_bad_blocks_and_ecc(smart: dict, health: dict) -> tuple[int, int]:
         for attr in _get(smart, "ata_smart_attributes", "table", default=[]):
             aid     = attr.get("id", 0)
             raw_val = attr.get("raw", {}).get("value", 0)
-            if aid == 187 and isinstance(raw_val, int):
+            if aid == 187 and isinstance(raw_val, int):   # Reported Uncorrectable
                 ecc_errors = max(ecc_errors, raw_val)
-            if aid == 196 and isinstance(raw_val, int):
+            if aid == 196 and isinstance(raw_val, int):   # Reallocation Event Count
                 ecc_errors += raw_val
     except Exception:
         pass
@@ -217,13 +238,11 @@ def _parse_bad_blocks_and_ecc(smart: dict, health: dict) -> tuple[int, int]:
     bad_blocks: int = 0
     try:
         for attr in _get(smart, "ata_smart_attributes", "table", default=[]):
-            if attr.get("id") == 5:
+            if attr.get("id") == 5:   # Reallocated Sector Count — ÚNICO origen válido
                 raw_val = attr.get("raw", {}).get("value", 0)
                 if isinstance(raw_val, int):
                     bad_blocks = raw_val
                     break
-        if bad_blocks == 0 and ecc_errors > 0:
-            bad_blocks = min(ecc_errors, 999)
     except Exception:
         pass
 
@@ -438,13 +457,13 @@ def extract_disk_data(device_path: str = "/dev/nvme0n1") -> NVMeData:
         life_pct = max(0, min(100, 100 - percentage_used))
 
         # ── Capa 4: TBW y WAF ────────────────────────────────────────────
-        lba_written_tb = nand_written_tb = 0.0
-        waf = _WAF_BASE
-        rated_tbw = remaining_tbw = 0.0
+        lba_written_tb = rated_tbw = remaining_tbw = 0.0
+        waf = nand_written_tb = 0.0
         try:
-            lba_written_tb, nand_written_tb, waf, rated_tbw, remaining_tbw = (
-                _calc_tbw_and_waf(data_units_written, percentage_used, nvme_capacity)
+            lba_written_tb, rated_tbw, remaining_tbw = _calc_tbw(
+                data_units_written, percentage_used, nvme_capacity
             )
+            waf, nand_written_tb = _extract_real_waf(smart, lba_written_tb)
         except Exception as exc:
             print(f"[disk_reader] WARN TBW/WAF: {exc}")
 

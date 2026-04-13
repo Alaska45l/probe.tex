@@ -42,7 +42,7 @@ import subprocess
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Final, Optional
 
 from core.models import RAMData
 
@@ -61,6 +61,22 @@ _MEMTESTER_LOOPS:     int = 1      # número de iteraciones
 _MEMTESTER_TIMEOUT_S: int = 600    # 10 minutos; memtester en 1 GB puede tardar
 
 _DMIDECODE_TIMEOUT: int = 6
+
+_MLC_TIMEOUT_S:  Final[int]   = 60
+_MLC_LAT_MIN_NS: Final[float] = 10.0
+"""Mínimo físicamente plausible para DRAM en ns (LPDDR5X ~10–20 ns)."""
+_MLC_LAT_MAX_NS: Final[float] = 500.0
+"""Máximo plausible. >500 ns indica unidad incorrecta o artefacto de parseo."""
+
+# Captura la fila "  0    75.3" del output de mlc --idle_latency:
+# la primera columna es el nodo NUMA origen (0), la siguiente es la latencia
+# al nodo 0 (local, sin cruce de interconexión). Se requiere al menos un
+# dígito antes y después del punto decimal para evitar colisiones con
+# versiones del binario que imprimen rangos como "73-78".
+_MLC_LAT_RE: re.Pattern = re.compile(
+    r"^\s+0\s+(\d+\.\d+)",
+    re.MULTILINE,
+)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -234,13 +250,35 @@ def _assign_edac_to_dimms(
 # ════════════════════════════════════════════════════════════════════════════
 
 def _infer_dual_channel(modules: list[_DimmModule]) -> bool:
+    """
+    Infiere dual-channel desde los locator names de DMI.
+
+    Patrones comunes:
+      - Intel: DIMM_A1, DIMM_B1 → canales A y B poblados → dual
+      - AMD:   DIMM_P0, DIMM_P1 → ídem
+      - Fallback numérico: pares de slots con IDs distintos
+
+    Si los locators son genéricos ("DIMM 0", "DIMM 1") sin letra de canal,
+    usa el conteo como heurística pero lo marca como incierto.
+    """
     occupied = [m for m in modules if m.occupied]
-    count    = len(occupied)
-    if count in (2, 4):
-        return True
-    if count <= 1:
+    if len(occupied) < 2:
         return False
-    return count > 1
+
+    channel_pattern = re.compile(r'(?:DIMM[_\s]?|Channel\s+)([A-Z])', re.IGNORECASE)
+    channels: set[str] = set()
+    for mod in occupied:
+        m = channel_pattern.search(mod.locator)
+        if m:
+            channels.add(m.group(1).upper())
+
+    if channels:
+        # Solo dual-channel si hay al menos 2 canales distintos poblados
+        return len(channels) >= 2
+
+    # Fallback: sin letras de canal en los locators → heurística por conteo
+    # Es una estimación, no un hecho verificado.
+    return len(occupied) in (2, 4)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -293,6 +331,113 @@ def _run_memtester() -> int:
     except Exception as exc:
         print(f"[ram_reader] WARN memtester: {exc}")
         return 0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  CAPA 5b — Intel MLC: latencia de acceso idle a DRAM
+# ════════════════════════════════════════════════════════════════════════════
+
+def _measure_mlc_latency() -> Optional[float]:
+    """
+    Mide la latencia de acceso idle a DRAM usando Intel Memory Latency Checker.
+
+    Procedimiento
+    ─────────────
+    1. Carga el módulo MSR del kernel: MLC lo necesita para acceder a los
+       contadores de rendimiento (PMU). El fallo de modprobe es silencioso:
+       el módulo puede estar compilado estáticamente o ser irrelevante
+       para la arquitectura objetivo.
+    2. Ejecuta ``sudo mlc --idle_latency`` y parsea la latencia local del
+       nodo NUMA 0 → 0 (DRAM local, sin cruce de interconexión QPI/IF).
+    3. Valida que el resultado esté en el rango físico plausible de DRAM.
+
+    Latencias de referencia orientativas
+    ──────────────────────────────────────
+    LPDDR5X-8533:  ~14–18 ns   (portátiles ultrafinos, Intel 13+/AMD 7000)
+    DDR5-6000:     ~42–52 ns   (desktop high-end)
+    DDR4-3200:     ~62–80 ns   (desktop mainstream)
+    DDR4-2133:     ~75–95 ns   (portátil convencional)
+
+    Compatibilidad
+    ──────────────
+    - Intel MLC ≥ v3.x (binario propietario de uso libre, sin código fuente).
+      Descarga: https://www.intel.com/content/www/us/en/download/736633/
+    - Funciona en CPU Intel x86-64. Soporte AMD variable (sin garantía Intel).
+    - En sistemas NUMA con >1 nodo: se extrae solo la latencia local (0→0).
+    - Requiere: Linux ≥ 4.0, ejecución como root o CAP_SYS_RAWIO.
+
+    Returns
+    -------
+    float
+        Latencia idle en nanosegundos, redondeada a 1 decimal.
+        Nunca retorna 0.0 (latencia cero es físicamente imposible para DRAM).
+    None
+        mlc no instalado, error de ejecución, timeout o resultado no plausible.
+    """
+    # Paso 1: cargar módulo MSR (fallo absolutamente silencioso)
+    try:
+        subprocess.run(
+            ["sudo", "modprobe", "msr"],
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception:
+        pass   # No bloqueante bajo ninguna circunstancia
+
+    # Paso 2: ejecutar mlc --idle_latency
+    try:
+        result = subprocess.run(
+            ["sudo", "mlc", "--idle_latency"],
+            capture_output=True, text=True,
+            timeout=_MLC_TIMEOUT_S,
+        )
+    except FileNotFoundError:
+        print(
+            "[ram_reader] INFO mlc no encontrado → ram_cas_ns = None.\n"
+            "             Instalar desde: https://www.intel.com/content/www/us/en/"
+            "download/736633/intel-memory-latency-checker-intel-mlc.html"
+        )
+        return None
+    except subprocess.TimeoutExpired:
+        print(f"[ram_reader] WARN mlc superó {_MLC_TIMEOUT_S} s → ram_cas_ns = None.")
+        return None
+    except Exception as exc:
+        print(f"[ram_reader] WARN mlc invocación: {exc}")
+        return None
+
+    # Paso 3: parsear latencia nodo local (nodo 0 → nodo 0)
+    output = result.stdout + result.stderr
+
+    # rc=1 ocurre en sistemas sin PMU hardware pero con salida parseable.
+    # Solo abortamos si no hay salida alguna.
+    if not output.strip():
+        print(f"[ram_reader] WARN mlc rc={result.returncode}, sin salida → None.")
+        return None
+
+    match = _MLC_LAT_RE.search(output)
+    if not match:
+        # Imprimir el primer segmento de la salida para diagnóstico,
+        # sin saturar el log con dumps completos.
+        snippet = output[:200].replace("\n", "  ").strip()
+        print(f"[ram_reader] WARN mlc salida no reconocida: {snippet!r}")
+        return None
+
+    # Paso 4: convertir y validar rango físico
+    try:
+        ns = round(float(match.group(1)), 1)
+    except ValueError:
+        print("[ram_reader] WARN mlc: conversión a float falló.")
+        return None
+
+    if not (_MLC_LAT_MIN_NS <= ns <= _MLC_LAT_MAX_NS):
+        print(
+            f"[ram_reader] WARN mlc retornó {ns} ns — fuera del rango plausible "
+            f"[{_MLC_LAT_MIN_NS:.0f}, {_MLC_LAT_MAX_NS:.0f}] ns. Valor descartado."
+        )
+        return None
+
+    print(f"[ram_reader] INFO latencia CAS real (mlc): {ns} ns")
+    return ns
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -405,21 +550,25 @@ def extract_ram_data() -> RAMData:
         except Exception:
             pass
 
-        # ── Capa 5: Prueba activa — memtester ────────────────────────────
-        # Errores EDAC ya asignados a módulos; memtester puede sumar más.
-        edac_total = sum(m.total_errors for m in occupied)
+        # ── Capa 5: memtester + MLC ──────────────────────────────────────
+        edac_total       = sum(m.total_errors for m in occupied)
         memtester_errors = 0
         try:
             memtester_errors = _run_memtester()
         except Exception as exc:
             print(f"[ram_reader] WARN memtester (inesperado): {exc}")
 
-        total_errors = edac_total + memtester_errors
+        total_errors    = edac_total + memtester_errors
+        speed_effective = speed_mhz   # dato real de dmidecode (XMP/EXPO ya negociado)
 
-        # Velocidad efectiva: dato real de dmidecode (ya negociado por XMP/EXPO).
-        # CAS en ns: no disponible sin benchmark dedicado de latencia de acceso.
-        speed_effective = speed_mhz
-        cas_ns          = 0.0
+        # Latencia CAS: medición real vía mlc, o None si no disponible.
+        # NUNCA se usa 0.0: cero nanosegundos es una medición físicamente imposible.
+        cas_ns: Optional[float] = None
+        try:
+            cas_ns = _measure_mlc_latency()
+        except Exception as exc:
+            print(f"[ram_reader] WARN _measure_mlc_latency: {exc}")
+            cas_ns = None
 
         # ── Capa 6: LaTeX EDAC rows ──────────────────────────────────────
         edac_latex = ""

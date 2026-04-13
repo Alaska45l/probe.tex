@@ -1,0 +1,43 @@
+# ==========================================
+# INVARIANT / probe.tex
+# .gitignore
+# ==========================================
+
+# ── Entorno Python ────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+
+# ── Compilador LaTeX (Tectonic / TeX) ─────
+*.aux
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.toc
+*.xdv
+
+# ── Telemetría y Reportes Generados ───────
+# Ignorar salidas finales para no filtrar 
+# telemetría física en el repositorio.
+reporte_generado.pdf
+reporte_generado.tex
+*.log.txt
+
+# ── Entorno Archiso (truth-machine) ───────
+# Directorios de trabajo de mkarchiso
+work/
+out/
+*.iso
+
+# ── Editores y SO ─────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

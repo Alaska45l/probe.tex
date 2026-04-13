@@ -36,6 +36,7 @@ Grupos de clases
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -181,6 +182,9 @@ class CPUData:
     """Coordenadas pgfplots de la curva de temperatura (serie temporal).
     Formato: ``(0,45) (10,72) (20,68) ...`` Pre-renderizado por Python."""
 
+    cpu_pstate_measured: bool = False
+    """True si los relojes sostenidos fueron medidos vía cpufreq, False si estimados."""
+
     # ── P-States y throttling (sección 1.2) ─────────────────────────────
     cpu_base_p0: int = 0
     """Reloj base (MHz) del modo P0 (máximo rendimiento)."""
@@ -302,6 +306,10 @@ class GPUData:
     """Estado del hotspot para el bloque condicional:
     ``"ok"``, ``"warn"`` o ``"crit"``."""
 
+    gpu_vram_tested: bool = False
+    """True solo si se ejecutó un test real de VRAM. Controla el bloque
+    condicional [% if gpu_vram_tested %] en el template."""
+
     # ── Integridad de VRAM (sección 2.2) ─────────────────────────────────
     gpu_vram_seq_errors: int = 0
     """Errores en la prueba de escritura/lectura secuencial de VRAM."""
@@ -417,7 +425,7 @@ class NVMeData:
 
     # ── WAF y métricas de desgaste SMART (sección 3.2) ───────────────────
     nvme_waf: float = 0.0
-    """Write Amplification Factor. Umbral de OK: ≤ 3.0."""
+    """Write Amplification Factor. 0.0 significa "no disponible", NO waf=1.0."""
 
     nvme_waf_ok: bool = False
     """``True`` si nvme_waf ≤ 3.0. Controla el badge en la tabla."""
@@ -426,7 +434,7 @@ class NVMeData:
     """Total de datos escritos por el host en TB (LBA host writes)."""
 
     nvme_nand_written: float = 0.0
-    """Total de datos escritos físicamente en NAND en TB."""
+    """Total de datos escritos físicamente en NAND en TB. 0.0 significa "no disponible"."""
 
     nvme_bad_blocks: int = 0
     """Bloques NAND defectuosos. Umbral de OK: ≤ 50."""
@@ -506,8 +514,14 @@ class RAMData:
     ram_speed_effective: int = 0
     """Velocidad efectiva medida durante la prueba (MHz)."""
 
-    ram_cas_ns: float = 0.0
-    """Latencia CAS medida en nanosegundos."""
+    ram_cas_ns: Optional[float] = None
+    """
+    Latencia CAS real medida por Intel MLC (``mlc --idle_latency``) en ns.
+
+    None si mlc no está instalado, no pudo completar la medición o
+    el resultado quedó fuera del rango físico plausible [10, 500] ns.
+    Nunca 0.0: cero nanosegundos es físicamente imposible para DRAM.
+    """
 
     ram_test_method: str = "N/A"
     """Método/herramienta de prueba usada
@@ -583,11 +597,25 @@ class MotherboardData:
     vrm_vdroop_max: float = 0.0
     """Caída de voltaje máxima medida (V). Umbral warn: ~0.05 V."""
 
-    vrm_temp: float = 0.0
-    """Temperatura del VRM bajo carga (°C)."""
+    vrm_temp: Optional[float] = None
+    """
+    Temperatura del VRM bajo carga (°C) leída desde hwmon.
 
-    vrm_phases: int = 0
-    """Número de fases del VRM detectadas."""
+    None si ningún sensor ``temp*_input`` con etiqueta VRM está expuesto
+    por el hardware o el controlador. La ausencia del sensor no implica
+    VRM frío: es simplemente telemetría no disponible.
+    Nota: 0.0 °C tampoco es una lectura plausible de VRM; None es el único
+    valor honesto cuando el sensor no existe.
+    """
+
+    vrm_phases: Optional[int] = None
+    """
+    Número de fases del VRM detectadas vía conteo de ``curr*_input`` en hwmon.
+
+    None si no hay canales de corriente expuestos (controlador de VRM propietario
+    o driver sin soporte de lectura de fases). No existe VRM de cero fases;
+    0 nunca debe aparecer aquí.
+    """
 
     vdroop_status: str = "N/A"
     """Etiqueta textual del estado del droop para la línea de resumen
@@ -621,8 +649,14 @@ class BatteryData:
     bat_full_cap: int = 0
     """Capacidad actual de carga completa en mWh (se degrada con el uso)."""
 
-    bat_cycles: int = 0
-    """Ciclos de carga acumulados."""
+    bat_cycles: Optional[int] = None
+    """
+    Ciclos de carga acumulados (``cycle_count`` o ``charge_control_cycle_count``).
+
+    None si el BMS no expone ninguno de los dos archivos en sysfs.
+    0 es un valor válido (batería nueva) y se diferencia explícitamente de None.
+    Semántica: None = «sin dato», 0 = «cero ciclos registrados».
+    """
 
     bat_soh: int = 0
     """State of Health (SoH) en porcentaje.
@@ -635,14 +669,30 @@ class BatteryData:
     bat_voltage_load: float = 0.0
     """Voltaje medido bajo carga de descarga en V."""
 
-    bat_voltage_drop: float = 0.0
-    """Caída de voltaje ΔV bajo carga en V."""
+    bat_voltage_drop: Optional[float] = None
+    """
+    Caída de voltaje ΔV bajo carga en V (V_nominal − V_actual).
+
+    None si la batería no estaba en modo Discharging durante el análisis.
+    Una caída de 0.0 V con la batería conectada al cargador no es información
+    útil: el cargador mantiene el voltaje independientemente de la impedancia
+    interna. Solo tiene sentido bajo descarga activa.
+    """
 
     bat_current_load: int = 0
     """Corriente de descarga medida en mA."""
 
-    bat_resistance: float = 0.0
-    """Resistencia interna estimada en mΩ."""
+    bat_resistance: Optional[float] = None
+    """
+    Resistencia interna estimada en mΩ.  Modelo: R = (ΔV / I_A) × 1000.
+
+    None si las condiciones de medición no se cumplieron:
+      - status ≠ "Discharging"  (sin corriente de descarga real)
+      - |I| < 100 mA            (carga insuficiente para estimación fiable)
+      - ΔV ≤ 0                  (V_actual ≥ V_nominal; batería o cargador en boost)
+    Nunca 0.0: una resistencia de cero ohmios es una superconducción, no
+    una batería de portátil.
+    """
 
     # ── Gauge TikZ ───────────────────────────────────────────────────────
     bat_gauge_color: str = "StatusOKMid"

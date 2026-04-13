@@ -1,3 +1,4 @@
+import json
 import time
 import platform
 import subprocess
@@ -6,7 +7,10 @@ from datetime import datetime
 from pathlib import Path
 import jinja2
 
-from core.models import DiagnosticReport, ReportMetadata, GlobalSummary
+from core.models import (
+    DiagnosticReport, ReportMetadata, GlobalSummary,
+    NVMeData, RAMData, MotherboardData, USBData, BatteryData
+)
 from core.entropy import evaluate_system_entropy
 from extractors.cpu_reader import extract_cpu_data
 from extractors.disk_reader import extract_disk_data
@@ -17,28 +21,105 @@ from extractors.usb_reader import extract_usb_data
 from extractors.battery_reader import extract_battery_data
 from tui import run_tui
 
+def _detect_nvme_device() -> str:
+    """
+    Detecta el dispositivo de almacenamiento primario del sistema.
+
+    Prioridad: NVMe (más rápido, más común en sistemas modernos) → SATA SSD → HDD.
+    Usa /sys/class/block para enumerar sin depender de herramientas externas.
+    El "primario" se define como el disco donde está montado /  (rootfs).
+    """
+    import subprocess, re
+    try:
+        # lsblk JSON es el método más robusto y portable
+        out = subprocess.run(
+            ["lsblk", "-J", "-o", "NAME,TYPE,MOUNTPOINT"],
+            capture_output=True, text=True, timeout=5
+        ).stdout
+        data = json.loads(out)
+        for dev in data.get("blockdevices", []):
+            if dev.get("type") != "disk":
+                continue
+            # Buscar si alguna partición tiene mountpoint "/"
+            for child in dev.get("children", []):
+                if child.get("mountpoint") == "/":
+                    return f"/dev/{dev['name']}"
+    except Exception:
+        pass
+
+    # Fallback: primer NVMe en /sys/class/nvme/
+    try:
+        nvme_root = Path("/sys/class/nvme")
+        if nvme_root.exists():
+            for ctrl in sorted(nvme_root.iterdir()):
+                # Cada controlador NVMe tiene al menos un namespace nvme0n1
+                ns = sorted(ctrl.glob("nvme*n1"))
+                if ns:
+                    return f"/dev/{ns[0].name}"
+    except Exception:
+        pass
+
+    print("[main] WARN no se detectó dispositivo de almacenamiento primario. Usando /dev/nvme0n1.")
+    return "/dev/nvme0n1"
+
 def render_pdf():
-    print("[*] Iniciando motor de extracción concurrente Invariant...")
+    print("[*] Iniciando extracción de datos estáticos concurrente...")
     start_time = time.time()
 
-    # Ejecución paralela de todos los extractores
-    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
-        future_cpu  = executor.submit(extract_cpu_data)
-        future_gpu  = executor.submit(extract_gpu_data)
-        future_disk = executor.submit(extract_disk_data, "/dev/nvme0n1")
+    # Timeouts agresivos por extractor (en segundos)
+    _TIMEOUTS: dict[str, int] = {
+        "disk": 130,    # fio 15s + smartctl 5s + overhead
+        "ram":  620,    # memtester 600s + dmidecode
+        "mobo": 40,
+        "usb":  15,
+        "bat":  15,
+        "cpu":  70,     # stress 30s + cooling 15s + overhead
+        "gpu":  45,     # stress 20s + cooling 10s + overhead
+    }
+
+    # FASE 1: extractores sin carga activa (paralelos, seguros)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_disk = executor.submit(extract_disk_data, _detect_nvme_device())
         future_ram  = executor.submit(extract_ram_data)
         future_mobo = executor.submit(extract_motherboard_data)
         future_usb  = executor.submit(extract_usb_data)
         future_bat  = executor.submit(extract_battery_data)
 
-        # Se espera a que todos terminen (sincronización de hilos)
-        cpu_data  = future_cpu.result()
-        gpu_data  = future_gpu.result()
-        disk_data = future_disk.result()
-        ram_data  = future_ram.result()
-        mobo_data = future_mobo.result()
-        usb_data  = future_usb.result()
-        bat_data  = future_bat.result()
+        try:
+            disk_data = future_disk.result(timeout=_TIMEOUTS["disk"])
+        except concurrent.futures.TimeoutError:
+            print("[main] WARN extractor disk superó timeout. Usando NVMeData() vacío.")
+            disk_data = NVMeData()
+        try:
+            ram_data = future_ram.result(timeout=_TIMEOUTS["ram"])
+        except concurrent.futures.TimeoutError:
+            print("[main] WARN extractor ram superó timeout. Usando RAMData() vacío.")
+            ram_data = RAMData()
+        try:
+            mobo_data = future_mobo.result(timeout=_TIMEOUTS["mobo"])
+        except concurrent.futures.TimeoutError:
+            print("[main] WARN extractor mobo superó timeout. Usando MotherboardData() vacío.")
+            mobo_data = MotherboardData()
+        try:
+            usb_data = future_usb.result(timeout=_TIMEOUTS["usb"])
+        except concurrent.futures.TimeoutError:
+            print("[main] WARN extractor usb superó timeout. Usando USBData() vacío.")
+            usb_data = USBData()
+        try:
+            bat_data = future_bat.result(timeout=_TIMEOUTS["bat"])
+        except concurrent.futures.TimeoutError:
+            print("[main] WARN extractor bat superó timeout. Usando BatteryData() vacío.")
+            bat_data = BatteryData()
+
+    print("[*] Extracción estática completada. Iniciando forense activo secuencial...")
+
+    # FASE 2: tests térmicos SECUENCIALES — CPU primero, luego GPU
+    # Sin solapamiento garantizado: el estrés de CPU no contamina GPU y viceversa.
+    print("[*]   → Test térmico CPU (30s carga + 15s enfriamiento)...")
+    cpu_data = extract_cpu_data()
+
+    print("[*]   → Test térmico GPU (20s carga + 10s enfriamiento)...")
+    gpu_data = extract_gpu_data()
 
     end_time = time.time()
     duracion_segundos = round(end_time - start_time, 1)

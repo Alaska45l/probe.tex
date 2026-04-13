@@ -572,7 +572,7 @@
   \toprule
   \thcell{Modo de Operación} &
   \thcell{Reloj Base (MHz)} &
-  \thcell{Reloj Sostenido (MHz)} &
+  \thcell{[% if cpu_pstate_measured %]Reloj Sostenido[% else %]Reloj Sostenido (est.)[% endif %] (MHz)} &
   \thcell{Desviación} \\
   \midrule
   P0 --- Máximo rendimiento  & \mv{<< cpu_base_p0 >>} & << cpu_sust_p0 >> & << cpu_dev_p0 >>\% \\
@@ -727,6 +727,7 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 % ────────────────────────────────────────────────────────────────────────────
 \subsection{Integridad de VRAM}
 
+[% if gpu_vram_tested %]
 \begin{tabularx}{\linewidth}{@{} X c c c c @{}}
   \toprule
   \thcell{Prueba de Memoria} & \thcell{Tamaño} &
@@ -739,7 +740,7 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   Patrón de bits aleatorio     & \mv{<< gpu_vram_total >>\ GB} & Random &
     \mv{<< gpu_vram_rand_errors >>} &
     [% if gpu_vram_rand_errors == 0 %]\badgeok[% else %]\badgefail[% endif %] \\
-  Stress combinado (30 s)      & \mv{<< gpu_vram_stress_gb >>\ GB} & Mixed &
+  Stress combinado             & \mv{<< gpu_vram_stress_gb >>\ GB} & Mixed &
     \mv{<< gpu_vram_stress_errors >>} &
     [% if gpu_vram_stress_errors == 0 %]\badgeok[% else %]\badgefail[% endif %] \\
   \rowalt
@@ -747,6 +748,24 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
     [% if gpu_ecc_correctable == 0 %]\badgeok[% else %]\badgewarn[% endif %] \\
   \bottomrule
 \end{tabularx}
+[% else %]
+\begin{amboxinfo}{Test de Integridad VRAM No Ejecutado}
+  \small
+  [% if gpu_vram_total == 0 %]%
+    VRAM no detectada o GPU integrada sin pool dedicado.
+  [% else %]%
+    El análisis se ejecutó bajo entorno gráfico activo (Wayland/X11 detectado).
+    Un test destructivo de escritura sobre VRAM corrompería el framebuffer
+    del compositor activo.\\[4pt]
+    Para ejecutar el test: reiniciar en TTY pura (\texttt{systemctl isolate multi-user.target})
+    y relanzar \texttt{probe.tex}.\\[4pt]
+    Herramientas requeridas según GPU:\\
+    \hspace{1em}AMD\,:\enspace\texttt{yay -S gpu\_memtest}\\
+    \hspace{1em}NVIDIA:\enspace\texttt{sudo pacman -S cuda-tools}\\
+    \hspace{1em}Intel\,:\enspace\texttt{sudo pacman -S memtester}
+  [% endif %]
+\end{amboxinfo}
+[% endif %]
 
 \vspace{0.5cm}
 
@@ -903,11 +922,20 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \thcell{Métrica NVMe} & \thcell{Valor Actual} &
   \thcell{Umbral} & \thcell{Estado} \\
   \midrule
-  Write Amplification Factor (WAF) & \mv{<< nvme_waf >>} & $\leq 3.0$ &
-    [% if nvme_waf_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Write Amplification Factor (WAF) &
+    [% if nvme_waf > 0.0 %]
+    \mv{<< nvme_waf >>} & $\leq 3.0$ & [% if nvme_waf_ok %]\badgeok[% else %]\badgewarn[% endif %]
+    [% else %]
+    \mv{N/A (no expuesto por firmware)} & --- & \badgeinfo
+    [% endif %] \\
   \rowalt
   LBA escritos (host)         & \mv{<< nvme_lba_written >>\ TB}  & --- & --- \\
-  NAND escritas (total)       & \mv{<< nvme_nand_written >>\ TB} & --- & --- \\
+  NAND escritas (total)       &
+    [% if nvme_nand_written > 0.0 %]
+    \mv{<< nvme_nand_written >>\ TB}
+    [% else %]
+    \textcolor{AMSlate}{\textit{N/D}}
+    [% endif %] & --- & --- \\
   \rowalt
   Bloques NAND defectuosos    & \mv{<< nvme_bad_blocks >>}   & $\leq 50$ &
     [% if nvme_bad_blocks_ok %]\badgeok[% else %]\badgefail[% endif %] \\
@@ -963,8 +991,14 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
   \vspace{0.4cm}
   \small
-  \textbf{Velocidad efectiva:}\ \mv{<< ram_speed_effective >>\ MHz}\\
-  \textbf{Latencia CAS medida:}\ \mv{<< ram_cas_ns >>\ ns}\\
+  \textbf{Velocidad efectiva:}\ \mv{<< ram_speed_effective >>\ MHz}\\[2pt]
+  \textbf{Latencia CAS medida:}\
+  [% if ram_cas_ns is not none %]%
+    \mv{<< ram_cas_ns >>\ ns}%
+    \hspace{6pt}{\scriptsize\textcolor{AMSlate}{(Intel MLC \texttt{--idle\_latency})}}%
+  [% else %]%
+    \textcolor{AMSlate}{\textit{N/D\,---\,requiere \texttt{mlc} (Intel MLC)}}%
+  [% endif %]\\[2pt]
   \textbf{Método de prueba:}\ \texttt{<< ram_test_method >>}
 \end{minipage}%
 \hfill
@@ -1097,11 +1131,26 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 \end{axis}
 \end{tikzpicture}
 
+\noindent{\scriptsize\color{AMSlate}
+\textit{Nota: el VRM no expone historial temporal. Las líneas representan
+el voltaje VID nominal estimado y el voltaje medido puntualmente durante
+el análisis (condición de carga ligera del sistema operativo).}}
+
 \vspace{0.3cm}
 \noindent\small
 \textbf{$V_{\text{droop}}$ máx.:}\ \mv{<< vrm_vdroop_max >>\ V}\quad
-\textbf{Temperatura VRM:}\ \mv{<< vrm_temp >>$^\circ$C}\quad
-\textbf{Fases VRM:}\ \mv{<< vrm_phases >>}\quad
+\textbf{Temperatura VRM:}\
+[% if vrm_temp is not none %]%
+  \mv{<< vrm_temp >>$^\circ$C}%
+[% else %]%
+  \textcolor{AMSlate}{\textit{N/D}}%
+[% endif %]\quad
+\textbf{Fases VRM:}\
+[% if vrm_phases is not none %]%
+  \mv{<< vrm_phases >>}%
+[% else %]%
+  \textcolor{AMSlate}{\textit{N/D}}%
+[% endif %]\quad
 \textbf{Estado:}\ \mv{<< vdroop_status >>}
 
 \vspace{0.3cm}
@@ -1137,16 +1186,31 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
     Capacidad de diseño         & \mv{<< bat_design_cap >>\ mWh} \\
     \rowalt
     Capacidad actual (plena)    & \mv{<< bat_full_cap >>\ mWh} \\
-    Ciclos de carga             & \mv{<< bat_cycles >>} \\
+    Ciclos de carga             &
+      [% if bat_cycles is not none %]%
+        \mv{<< bat_cycles >>}%
+      [% else %]%
+        \textcolor{AMSlate}{\textit{N/D}}%
+      [% endif %] \\
     \rowalt
     Estado de salud (SoH)       & \mv{<< bat_soh >>\%} \\
     Voltaje nominal             & \mv{<< bat_voltage_nom >>\ V} \\
     \rowalt
     Voltaje bajo carga          & \mv{<< bat_voltage_load >>\ V} \\
-    $\Delta V$ bajo carga       & \mv{<< bat_voltage_drop >>\ V} \\
+    $\Delta V$ bajo carga       &
+      [% if bat_voltage_drop is not none %]%
+        \mv{<< bat_voltage_drop >>\ V}%
+      [% else %]%
+        \textcolor{AMSlate}{\textit{Requiere descarga}}%
+      [% endif %] \\
     \rowalt
     Corriente de descarga       & \mv{<< bat_current_load >>\ mA} \\
-    Resistencia interna est.    & \mv{<< bat_resistance >>\ m$\Omega$} \\
+    Resistencia interna est.    &
+      [% if bat_resistance is not none %]%
+        \mv{<< bat_resistance >>\ m$\Omega$}%
+      [% else %]%
+        \textcolor{AMSlate}{\textit{Requiere descarga}}%
+      [% endif %] \\
     \bottomrule
   \end{tabularx}
 \end{minipage}%
@@ -1276,6 +1340,7 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \end{amboxok}
   [% endif %]
 \end{minipage}
+\newpage
 
 
 % ════════════════════════════════════════════════════════════════════════════

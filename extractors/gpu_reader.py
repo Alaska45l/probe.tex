@@ -56,12 +56,13 @@ stdlib únicamente: subprocess, re, pathlib, threading, time.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Final, Optional
 
 from core.models import GPUData
 
@@ -73,6 +74,15 @@ from core.models import GPUData
 _LSPCI_TIMEOUT:    int   = 5
 _MODINFO_TIMEOUT:  int   = 4
 _NSMI_TIMEOUT:     int   = 5
+
+_VRAM_TEST_TIMEOUT_S: Final[int] = 120
+"""Tiempo máximo del test de integridad de VRAM en segundos."""
+
+_GUI_PROCESS_PATTERN: Final[str] = (
+    r"Xorg|Xwayland|sway|kwin_wayland|kwin_x11|mutter|"
+    r"gnome-shell|plasmashell|weston|hyprland|niri|river|openbox"
+)
+"""Patrón ERE para pgrep -f. Cubre compositors Wayland y X11 de uso habitual."""
 
 # Parámetros de la Prueba Térmica Activa GPU
 _GPU_STRESS_DURATION_S:  int   = 20    # segundos de carga via stress-ng --matrix
@@ -376,6 +386,177 @@ def _classify_hotspot(delta: float, t_edge: float, t_hotspot: float) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+#  CAPA 4b — Detección de entorno gráfico y test de integridad VRAM
+# ════════════════════════════════════════════════════════════════════════════
+
+def _is_gui_active() -> bool:
+    """
+    Determina si hay un servidor gráfico activo en la sesión actual.
+
+    Política de fallo seguro: ante cualquier ambigüedad o excepción, retorna
+    True (asumir GUI presente). El test destructivo de VRAM solo se activa
+    con certeza de entorno TTY puro — jamás por default o por omisión.
+
+    Capas de detección (orden creciente de coste)
+    ─────────────────────────────────────────────
+    1. Variables de entorno del display server — O(1), sin syscall de proceso.
+    2. XDG_SESSION_TYPE — discrimina sesiones gráficas de TTY/SSH/container.
+    3. pgrep -f — un único proceso hijo contra el patrón de compositors.
+
+    Returns
+    -------
+    True  → GUI activa o estado indeterminado. Test destructivo prohibido.
+    False → TTY pura confirmada. Estrés de VRAM habilitado.
+    """
+    # Capa 1: variables del display server (Wayland y X11)
+    if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"):
+        return True
+
+    # Capa 2: tipo de sesión XDG
+    if os.environ.get("XDG_SESSION_TYPE", "").lower().strip() in ("x11", "wayland", "mir"):
+        return True
+
+    # Capa 3: búsqueda de proceso compositor vía pgrep -f (ERE, un solo fork)
+    try:
+        r = subprocess.run(
+            ["pgrep", "-f", _GUI_PROCESS_PATTERN],
+            capture_output=True,
+            timeout=3,
+        )
+        # rc=0 → proceso encontrado → GUI activa
+        # rc=1 → no encontrado    → TTY pura
+        return r.returncode == 0
+    except FileNotFoundError:
+        return True   # pgrep no disponible → fallo seguro
+    except Exception:
+        return True   # Cualquier error inesperado → fallo seguro
+
+
+def _parse_gpu_memtest_errors(output: str) -> int:
+    """
+    Parsea errores de la salida de gpu_memtest (ROCm / HIP).
+
+    Formatos conocidos
+    ------------------
+    ``[HIP] ERROR: N bit error(s) found at block 0x...``  → conteo numérico
+    ``Test FAILED``                                         → marcador sin conteo
+    """
+    total = 0
+    for m in re.finditer(r"ERROR:\s+(\d+)\s+bit\s+error", output, re.IGNORECASE):
+        total += int(m.group(1))
+    if total == 0:
+        # Sin conteo numérico: un marcador FAILED = 1 unidad de error lógico
+        total = len(re.findall(r"\bFAILED\b", output, re.IGNORECASE))
+    return total
+
+
+def _parse_cuda_memtest_errors(output: str) -> int:
+    """
+    Parsea errores de la salida de cuda-memtest (NVIDIA CUDA tools).
+
+    Formatos conocidos
+    ------------------
+    ``N error(s) found``                  → conteo explícito preferido
+    ``Error at row R col C: expected X``  → error individual, sin conteo global
+    """
+    m = re.search(r"(\d+)\s+error", output, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return len(re.findall(r"\bError\b", output))
+
+
+def _run_vram_stress_test(
+    vram_total_gb: int,
+    driver_name:   str,
+) -> tuple[int, int, int, int, bool]:
+    """
+    Ejecuta test de integridad de VRAM en entorno TTY puro confirmado.
+
+    Estrategia por driver
+    ─────────────────────
+    amdgpu (discreto) → gpu_memtest     (ROCm ecosystem, AUR: gpu_memtest)
+    nvidia            → cuda-memtest    (AUR: cuda-tools)
+    i915 / xe (iGPU)  → memtester proxy sobre DRAM compartido (ver nota)
+    resto             → sin tool disponible, tested=False
+
+    Nota sobre el proxy Intel iGPU
+    ──────────────────────────────
+    La iGPU Intel (i915/xe) no posee VRAM dedicada: el driver asigna regiones
+    del DRAM del sistema vía GTT (Graphics Translation Tables). memtester
+    sobre el DRAM del sistema cubre físicamente el mismo silicio que la iGPU
+    accede. No valida la lógica de acceso GTT, pero detecta errores físicos
+    de celda. El reporte documenta este hecho mediante gpu_vram_tested.
+
+    Parameters
+    ----------
+    vram_total_gb : GB de VRAM detectada (0 si iGPU sin valor explícito).
+    driver_name   : Driver de kernel activo (ej. "amdgpu", "nvidia", "i915").
+
+    Returns
+    -------
+    (seq_errors, rand_errors, stress_errors, tested_gb, tested)
+        tested=False → ninguna herramienta disponible o no ejecutable.
+    """
+    d = driver_name.lower()
+
+    # ── AMD amdgpu discreto → gpu_memtest (ROCm) ──────────────────────────
+    if "amdgpu" in d:
+        try:
+            r = subprocess.run(
+                ["gpu_memtest"],
+                capture_output=True, text=True,
+                timeout=_VRAM_TEST_TIMEOUT_S,
+            )
+            errors = _parse_gpu_memtest_errors(r.stdout + r.stderr)
+            # gpu_memtest no desglosa seq/rand/stress → reportar en stress_errors
+            return 0, 0, errors, max(vram_total_gb, 1), True
+        except FileNotFoundError:
+            print("[gpu_reader] INFO gpu_memtest no disponible. Instalar: yay -S gpu_memtest")
+        except subprocess.TimeoutExpired:
+            print(f"[gpu_reader] WARN gpu_memtest superó {_VRAM_TEST_TIMEOUT_S} s.")
+        except Exception as exc:
+            print(f"[gpu_reader] WARN gpu_memtest: {exc}")
+
+    # ── NVIDIA → cuda-memtest ──────────────────────────────────────────────
+    if "nvidia" in d:
+        try:
+            r = subprocess.run(
+                ["cuda-memtest"],
+                capture_output=True, text=True,
+                timeout=_VRAM_TEST_TIMEOUT_S,
+            )
+            errors = _parse_cuda_memtest_errors(r.stdout + r.stderr)
+            return 0, 0, errors, max(vram_total_gb, 1), True
+        except FileNotFoundError:
+            print("[gpu_reader] INFO cuda-memtest no disponible. Instalar: sudo pacman -S cuda-tools")
+        except subprocess.TimeoutExpired:
+            print(f"[gpu_reader] WARN cuda-memtest superó {_VRAM_TEST_TIMEOUT_S} s.")
+        except Exception as exc:
+            print(f"[gpu_reader] WARN cuda-memtest: {exc}")
+
+    # ── Intel iGPU (i915 / Xe) → proxy memtester sobre DRAM compartido ───
+    if "i915" in d or "xe" in d:
+        test_mb = min(max(vram_total_gb * 1024, 256), 1024)
+        try:
+            r = subprocess.run(
+                ["sudo", "memtester", f"{test_mb}M", "1"],
+                capture_output=True, text=True,
+                timeout=_VRAM_TEST_TIMEOUT_S,
+            )
+            failures = len(re.findall(r"\bFAILURE\b", r.stdout + r.stderr, re.IGNORECASE))
+            tested_gb = max(test_mb // 1024, 1)
+            return failures, 0, 0, tested_gb, True
+        except FileNotFoundError:
+            print("[gpu_reader] INFO memtester no disponible para proxy iGPU Intel.")
+        except subprocess.TimeoutExpired:
+            print(f"[gpu_reader] WARN memtester iGPU superó {_VRAM_TEST_TIMEOUT_S} s.")
+        except Exception as exc:
+            print(f"[gpu_reader] WARN memtester iGPU: {exc}")
+
+    return 0, 0, 0, 0, False
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  CAPA 5 — Prueba Térmica Activa (stress-ng + hilo de muestreo)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -669,9 +850,15 @@ def extract_gpu_data() -> GPUData:
         except Exception:
             pass
 
-        # ── Capa 4: VRAM — solo sysfs, cero invenciones ───────────────────
-        vram_gb   = 0
-        vram_type = "N/A"
+        # ── Capa 4: VRAM + detección de GUI + test de integridad ──────────
+        vram_gb       = 0
+        vram_type     = "N/A"
+        vram_tested   = False
+        seq_errors    = 0
+        rand_errors   = 0
+        stress_errors = 0
+        stress_gb     = 0
+
         try:
             if card is not None:
                 vram_gb, vram_type = _read_vram_amdgpu(card)
@@ -683,6 +870,21 @@ def extract_gpu_data() -> GPUData:
                 vram_gb, vram_type = _read_vram_nvidia()
             except Exception:
                 pass
+
+        # Test de integridad: solo en TTY pura confirmada.
+        if _is_gui_active():
+            print(
+                "[gpu_reader] INFO GUI activa detectada. "
+                "Test destructivo de VRAM omitido para preservar el entorno gráfico."
+            )
+        else:
+            print("[gpu_reader] INFO TTY puro detectado. Ejecutando test de integridad de VRAM...")
+            try:
+                (seq_errors, rand_errors, stress_errors,
+                 stress_gb, vram_tested) = _run_vram_stress_test(vram_gb, driver_name)
+            except Exception as exc:
+                print(f"[gpu_reader] WARN _run_vram_stress_test: {exc}")
+                vram_tested = False
 
         # ── Capa 5: PRUEBA TÉRMICA ACTIVA ─────────────────────────────────
         # Reemplaza la lectura estática original por un muestreo con carga
@@ -739,8 +941,6 @@ def extract_gpu_data() -> GPUData:
         except Exception:
             pass
 
-        vram_stress_gb = vram_gb
-
         # ── Ensamblaje final ──────────────────────────────────────────────
         return GPUData(
             gpu_model          = gpu_model,
@@ -757,11 +957,12 @@ def extract_gpu_data() -> GPUData:
             gpu_temp_limit       = temp_limit,
             gpu_hotspot_status   = hotspot_status,
 
-            # VRAM stress (simulado — 0 errores, sin test destructivo)
-            gpu_vram_seq_errors   = 0,
-            gpu_vram_rand_errors  = 0,
-            gpu_vram_stress_gb    = vram_stress_gb,
-            gpu_vram_stress_errors = 0,
+            # VRAM stress (honesto o ejecutado en TTY)
+            gpu_vram_tested       = vram_tested,
+            gpu_vram_seq_errors   = seq_errors,
+            gpu_vram_rand_errors  = rand_errors,
+            gpu_vram_stress_gb    = stress_gb,
+            gpu_vram_stress_errors= stress_errors,
             gpu_ecc_correctable   = 0,
 
             gpu_pcie_gen_max      = int(pcie["gen_max"]),

@@ -57,7 +57,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Final, Optional
 
 from core.models import CPUData
 
@@ -421,14 +421,23 @@ def _active_thermal_test(tjmax: int) -> tuple[float, float, float, float, str]:
     delta_t = round(t_max - t_idle, 1)
 
     # Tiempo de recuperación: segundos desde el pico hasta temp ≤ t_idle + 5 °C.
-    recovery_time = 0.0
+    _RECOVERY_NOT_ACHIEVED: Final[float] = -1.0   # Centinela: jamás se recuperó
+
+    recovery_time: float = 0.0   # 0.0 = no hubo pico (nominal)
+
     peak_idx = temps.index(max(temps))
     if peak_idx < len(samples) - 1:
         peak_elapsed = samples[peak_idx][0]
+        recovered = False
         for elapsed, temp in samples[peak_idx + 1:]:
             if temp <= t_idle + 5.0:
                 recovery_time = round(elapsed - peak_elapsed, 1)
+                recovered = True
                 break
+        if not recovered and temps[peak_idx] > t_idle + 5.0:
+            # El pico existió y la CPU no volvió a baseline en la ventana de enfriamiento.
+            recovery_time = _RECOVERY_NOT_ACHIEVED
+            print("[cpu_reader] WARN CPU no recuperó temperatura base en ventana de enfriamiento.")
 
     coords = " ".join(f"({s},{t})" for s, t in samples)
     return t_idle, t_max, delta_t, recovery_time, coords
@@ -455,6 +464,29 @@ def _classify_tim(delta_t: float) -> str:
 # ════════════════════════════════════════════════════════════════════════════
 #  CAPA 6 — P-States y throttling
 # ════════════════════════════════════════════════════════════════════════════
+
+def _sample_sustained_freq_mhz(duration_s: int = 5) -> int:
+    """
+    Lee la frecuencia real sostenida desde cpufreq mientras hay carga activa.
+    Muestrea scaling_cur_freq cada 0.5s durante duration_s segundos.
+    Retorna la mediana de las muestras (robusta ante picos de boost).
+    Retorna 0 si no disponible (sin privilegios o sin cpufreq driver).
+    """
+    samples: list[int] = []
+    pol0 = Path("/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq")
+    if not pol0.exists():
+        return 0
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
+        try:
+            samples.append(int(_read_sysfs(pol0)) // 1000)
+        except Exception:
+            pass
+        time.sleep(0.5)
+    if not samples:
+        return 0
+    samples.sort()
+    return samples[len(samples) // 2]   # mediana
 
 def _real_throttle_events() -> tuple[int, int]:
     total = 0
@@ -495,11 +527,18 @@ def _build_pstates(max_mhz: int, min_mhz: int) -> dict:
     def _dev(base: int, sust: int) -> float:
         return round(abs(base - sust) / base * 100.0, 1) if base else 0.0
 
-    base_p0, sust_p0 = max_mhz, int(max_mhz * 0.96)
+        # Para sust_p0: medir durante el stress activo que ya está corriendo en Capa 5
+        # El stress-ng ya está ejecutándose cuando se llama a _build_pstates
+        sust_p0 = _sample_sustained_freq_mhz(duration_s=4) or int(max_mhz * 0.96)
+        # Anotar en el campo si fue medido o estimado
+        sust_p0_real = sust_p0 != int(max_mhz * 0.96)
+
+        base_p0 = max_mhz
     base_p1, sust_p1 = mid_mhz, int(mid_mhz * 0.97)
     base_p2, sust_p2 = min_mhz, int(min_mhz * 0.99)
 
     return {
+            "measured": sust_p0_real,
         "base_p0": base_p0, "sust_p0": sust_p0, "dev_p0": _dev(base_p0, sust_p0),
         "base_p1": base_p1, "sust_p1": sust_p1, "dev_p1": _dev(base_p1, sust_p1),
         "base_p2": base_p2, "sust_p2": sust_p2, "dev_p2": _dev(base_p2, sust_p2),
@@ -692,6 +731,7 @@ def extract_cpu_data() -> CPUData:
             pstates = _build_pstates(max_mhz, min_mhz)
         except Exception:
             pstates = {
+                "measured": False,
                 "base_p0": max_mhz, "sust_p0": max_mhz, "dev_p0": 0.0,
                 "base_p1": max_mhz, "sust_p1": max_mhz, "dev_p1": 0.0,
                 "base_p2": min_mhz, "sust_p2": min_mhz, "dev_p2": 0.0,
@@ -732,6 +772,8 @@ def extract_cpu_data() -> CPUData:
             cpu_tim_status     = cpu_tim_status,
             cpu_thermal_status = cpu_thermal_status,
             datos_cpu_temp     = datos_cpu_temp,
+
+            cpu_pstate_measured= pstates.get("measured", False),
 
             cpu_base_p0 = pstates.get("base_p0", max_mhz),
             cpu_sust_p0 = pstates.get("sust_p0", max_mhz),

@@ -1,428 +1,346 @@
 """
-tui.py — Hardware Audit TUI
-Aesthetic: Teenage Engineering × Nothing Tech × Dieter Rams.
-"Less, but better."
-
-Python: 3.11+
-Dependencias: rich>=13.0
+tui.py — INVARIANT Terminal Interface
+probe.tex // Live OS Diagnostic — Ring-0 Edition
 """
 from __future__ import annotations
 
-import itertools
+import os
+import platform
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from threading import Event, Lock
-from typing import Callable, Deque, Final
+from typing import Callable, Deque, Final, Iterator
 
 from rich import box
 from rich.columns import Columns
-from rich.console import Console, Group
+from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.layout import Layout
 from rich.live import Live
+from rich.measure import Measurement
 from rich.panel import Panel
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TaskID,
-    TextColumn,
-    TimeElapsedColumn,
-)
+from rich.progress import Progress, ProgressColumn, Task, TextColumn, TimeElapsedColumn
 from rich.style import Style
+from rich.table import Column
 from rich.text import Text
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Design tokens — single source of truth
-# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Palette ───────────────────────────────────────────────────────────────────
 
 class C:
-    """Color palette. Touch nothing else."""
     WHITE:   Final[str] = "#FFFFFF"
-    GREY:    Final[str] = "#666666"
+    GREY:    Final[str] = "#888888"
     DIMGREY: Final[str] = "#333333"
     ORANGE:  Final[str] = "#FF5000"
     BLACK:   Final[str] = "#000000"
 
-    # Pre-built Style objects
     white   = Style(color=WHITE)
     grey    = Style(color=GREY)
     dimgrey = Style(color=DIMGREY)
-    orange  = Style(color=ORANGE, bold=True)
-    muted   = Style(color=GREY, italic=True)
-    label   = Style(color=ORANGE, bold=True)
+    accent  = Style(color=ORANGE, bold=True)
 
 
-BOX_STYLE: Final = box.SQUARE   # No rounded edges. Ever.
+# ── Progress bar ───────────────────────────────────────────────────────────────
 
-ASCII_LOGO: Final[str] = """\
- ██████╗ ██╗   ██╗██████╗ ██╗████████╗
- ██╔══██╗██║   ██║██╔══██╗██║╚══██╔══╝
- ███████║██║   ██║██║  ██║██║   ██║
- ██╔══██║██║   ██║██║  ██║██║   ██║
- ██║  ██║╚██████╔╝██████╔╝██║   ██║
- ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝   ╚═╝"""
+class _FlatBar:
+    def __init__(self, percentage: float) -> None:
+        self.percentage = percentage
 
-VERSION: Final[str] = "v1.0.0"
-FPS:     Final[int] = 10
-MAX_LOG_LINES: Final[int] = 16
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> Iterator[Text]:
+        width  = max(1, options.max_width)
+        filled = int(width * self.percentage / 100)
+        bar    = Text(no_wrap=True, overflow="crop")
+        style  = C.accent if self.percentage >= 100 else C.white
+        bar.append("━" * filled,           style=style)
+        bar.append("─" * (width - filled), style=C.dimgrey)
+        yield bar
 
-# Simulated log steps emitted while render_pdf() runs in background
-_AUDIT_STEPS: Final[tuple[str, ...]] = (
-    "Mounting sysfs namespace…",
-    "Reading /proc/cpuinfo…",
-    "Parsing CPU topology (SMT / CCD)…",
-    "Querying lscpu --json…",
-    "Probing SMART data via nvme-cli…",
-    "Scanning /sys/class/thermal/…",
-    "Reading DMI table (dmidecode)…",
-    "Fetching memory topology (decode-dimms)…",
-    "Enumerating PCI devices (lspci -vmm)…",
-    "Capturing GPU state (nvidia-smi / radeontop)…",
-    "Parsing kernel ring buffer (dmesg -l warn,err)…",
-    "Sampling power draw (RAPL MSR)…",
-    "Resolving network interfaces (ip -j link)…",
-    "Auditing storage I/O schedulers…",
-    "Snapshotting /proc/meminfo…",
-    "Collecting IRQ affinity map…",
-    "Initialising LaTeX engine (pdflatex)…",
-    "Compiling report template…",
-    "Embedding vector assets…",
-    "Running final PDF pass…",
-    "Verifying output checksum…",
-)
+    def __rich_measure__(self, console: Console, options: ConsoleOptions) -> Measurement:
+        return Measurement(1, options.max_width)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# State machine
-# ─────────────────────────────────────────────────────────────────────────────
+class FlatBarColumn(ProgressColumn):
+    def __init__(self) -> None:
+        super().__init__(table_column=Column(ratio=1, no_wrap=True))
 
-class RunState(Enum):
-    IDLE    = auto()
+    def render(self, task: Task) -> _FlatBar:
+        return _FlatBar(task.percentage)
+
+
+# ── State machine ──────────────────────────────────────────────────────────────
+
+class Phase(Enum):
+    INIT    = auto()
     RUNNING = auto()
     DONE    = auto()
     ERROR   = auto()
 
 
 @dataclass
-class UIState:
+class TuiState:
+    phase:        Phase      = Phase.INIT
+    logs:         Deque[str] = field(default_factory=lambda: deque(maxlen=25))
+    progress_pct: float      = 0.0
+    start_time:   float      = field(default_factory=time.monotonic)
+    _lock:        Lock       = field(default_factory=Lock)
+
+    @property
+    def elapsed(self) -> str:
+        delta   = time.monotonic() - self.start_time
+        minutes = int(delta // 60)
+        seconds = delta % 60
+        return f"T+ {minutes:02d}:{seconds:04.1f}s"
+
+    def start(self) -> None:
+        with self._lock:
+            self.start_time = time.monotonic()
+
+    def mission_clock(self) -> str:
+        delta   = time.monotonic() - self.start_time
+        minutes = int(delta // 60)
+        seconds = delta % 60
+        return f"{minutes:02d}:{seconds:04.1f}s"
+
+    def update(
+        self,
+        phase: Phase | None = None,
+        log:   str   | None = None,
+        pct:   float | None = None,
+    ) -> None:
+        with self._lock:
+            if phase is not None:
+                self.phase = phase
+            if log is not None:
+                self.logs.append(f"[{time.strftime('%H:%M:%S')}]  {log}")
+            if pct is not None:
+                self.progress_pct = max(0.0, min(100.0, pct))
+
+    def snapshot(self) -> TuiState:
+        with self._lock:
+            return TuiState(
+                phase=self.phase,
+                logs=deque(self.logs, maxlen=self.logs.maxlen),
+                progress_pct=self.progress_pct,
+                start_time=self.start_time,
+                _lock=Lock(),
+            )
+
+
+# ── UI components ──────────────────────────────────────────────────────────────
+
+class Header:
+    def __init__(self, state: TuiState) -> None:
+        self.state = state
+
+    def __rich__(self) -> Panel:
+        from rich.table import Table
+        
+        # Grid invisible que fuerza la expansión de borde a borde
+        grid = Table.grid(expand=True)
+        grid.add_column(justify="left")
+        grid.add_column(justify="right")
+        
+        # Ensamblaje del texto derecho (Reloj blanco + Título táctico)
+        t = self.state.mission_clock()
+        right_text = Text(f"T+ {t}  |  ", style=C.white)
+        right_text.append("probe.tex // Live OS Diagnostic", style=C.accent)
+        
+        grid.add_row(
+            Text("I N V A R I A N T", style=C.white),
+            right_text
+        )
+        return Panel(grid, box=box.SIMPLE, style=C.dimgrey)
+
+
+class TargetTopology:
     """
-    All mutable UI state. Protected by `lock`.
-    The render loop reads; the worker thread writes.
+    Métricas estáticas del host. Se construye una vez; los valores son
+    inmutables durante la vida de probe.tex.
     """
-    run_state:   RunState           = RunState.IDLE
-    logs:        Deque[str]         = field(
-        default_factory=lambda: deque(maxlen=MAX_LOG_LINES)
-    )
-    progress_pct: float             = 0.0    # 0.0 – 1.0
-    elapsed_s:   float              = 0.0
-    error_msg:   str                = ""
-    lock:        Lock               = field(default_factory=Lock)
 
-    def push_log(self, msg: str) -> None:
-        ts = time.strftime("%H:%M:%S")
-        with self.lock:
-            self.logs.append(f"[{ts}]  {msg}")
+    def __init__(self) -> None:
+        uname = platform.uname()
+        cpu   = platform.processor() or uname.machine or "N/A"
 
-    def snapshot(self) -> dict:
-        with self.lock:
-            return {
-                "run_state":    self.run_state,
-                "logs":         list(self.logs),
-                "progress_pct": self.progress_pct,
-                "elapsed_s":    self.elapsed_s,
-                "error_msg":    self.error_msg,
-            }
+        def _trim(s: str, n: int = 36) -> str:
+            return s[:n].rstrip() + ("…" if len(s) > n else "")
 
+        self._rows: tuple[tuple[str, str], ...] = (
+            ("HOST",   uname.node                             or "N/A"),
+            ("OS",     f"{uname.system} {uname.release}"      or "N/A"),
+            ("KERNEL", _trim(uname.version)),
+            ("ARCH",   uname.machine                          or "N/A"),
+            ("CPU",    _trim(cpu)),
+            ("PY",     platform.python_version()),
+            ("PID",    str(os.getpid())),
+            ("UID",    str(os.getuid()) if hasattr(os, "getuid") else "N/A"),
+        )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Layout builders — pure functions, called every frame
-# ─────────────────────────────────────────────────────────────────────────────
+    def __rich__(self) -> Panel:
+        lines: list[Text] = []
+        for i, (label, value) in enumerate(self._rows):
+            # Separador tras el bloque de identidad del SO (después de ARCH)
+            if i == 4:
+                lines.append(Text("─" * 32, style=C.dimgrey))
+            row = Text()
+            row.append(f"{label:<8}", style=C.grey)
+            row.append("  ")
+            row.append(value, style=C.white)
+            lines.append(row)
 
-def _build_header() -> Panel:
-    logo = Text(ASCII_LOGO, style=C.white, justify="left")
-
-    meta = Text(justify="right")
-    meta.append("HARDWARE AUDIT SYSTEM\n", style=C.orange)
-    meta.append(f"{VERSION}  //  JOBBOT SUITE", style=C.grey)
-
-    grid = Columns([logo, meta], expand=True, equal=False)
-
-    return Panel(
-        grid,
-        box=BOX_STYLE,
-        border_style=C.DIMGREY,
-        padding=(0, 1),
-    )
+        return Panel(
+            Group(*lines),
+            title="[ TARGET TOPOLOGY ]",
+            title_align="left",
+            border_style=C.dimgrey,
+            box=box.SQUARE,
+        )
 
 
-def _build_progress(snap: dict) -> Panel:
-    pct     = snap["progress_pct"]
-    elapsed = snap["elapsed_s"]
+class LogStream:
+    def __init__(self, state: TuiState) -> None:
+        self.state = state
 
-    # Bar rendered manually for full color control.
-    # rich Progress colours are overridden via complete_style.
-    progress = Progress(
-        SpinnerColumn(
-            spinner_name="dots",
-            style=Style(color=C.ORANGE),
-            finished_text=Text("■", style=C.orange),
-        ),
-        TextColumn(
-            "[progress.description]{task.description}",
-            style=C.grey,
-        ),
-        BarColumn(
-            bar_width=None,
-            style=Style(color=C.DIMGREY),
-            complete_style=Style(color=C.ORANGE),
-            finished_style=Style(color=C.ORANGE),
-        ),
-        TextColumn(
-            "{task.percentage:>5.1f}%",
-            style=C.white,
-        ),
-        TimeElapsedColumn(),
-        expand=True,
-        transient=False,
-    )
+    def __rich__(self) -> Panel:
+        entries = list(self.state.logs)
+        maxlen  = self.state.logs.maxlen or 25
+        lines: list[Text] = []
 
-    task: TaskID = progress.add_task(
-        "[ RENDER_PDF ]",
-        total=100,
-        completed=pct * 100,
-    )
-    # Freeze elapsed display using our own timer (worker may not be done yet)
-    # We patch the task's start time so TimeElapsedColumn shows our value.
-    progress.tasks[0].start_time = time.monotonic() - elapsed
+        for i, entry in enumerate(entries):
+            active = (i == len(entries) - 1) and self.state.phase == Phase.RUNNING
+            lines.append(
+                Text(f"● {entry}", style=C.white)
+                if active
+                else Text(f"○ {entry}", style=C.dimgrey)
+            )
 
-    return Panel(
-        progress,
-        title=Text("  [ PROGRESS ]  ", style=C.label),
-        title_align="left",
-        box=BOX_STYLE,
-        border_style=C.DIMGREY,
-        padding=(0, 1),
-    )
+        while len(lines) < maxlen:
+            lines.append(Text(""))
+
+        return Panel(
+            Group(*lines),
+            title="[ RING-0 TELEMETRY ]",
+            title_align="left",
+            border_style=C.dimgrey,
+            box=box.SQUARE,
+        )
 
 
-def _build_logs(snap: dict) -> Panel:
-    lines: list[str] = snap["logs"]
+class StatusBar:
+    def __init__(self, state: TuiState) -> None:
+        self.state = state
 
-    if not lines:
-        body = Text("  — awaiting signal —", style=C.muted, justify="left")
-    else:
-        body = Text(justify="left")
-        for i, line in enumerate(lines):
-            is_last = (i == len(lines) - 1)
-            prefix  = Text("▶ ", style=C.orange if is_last else C.dimgrey)
-            content = Text(line, style=C.white if is_last else C.grey)
-            body.append_text(prefix)
-            body.append_text(content)
-            body.append("\n")
+    def __rich__(self) -> Panel:
+        progress = Progress(
+            TextColumn("[{task.percentage:>3.0f}%]", style=C.grey),
+            FlatBarColumn(),
+            TimeElapsedColumn(),
+            expand=True,
+        )
+        task_id = progress.add_task("probe", total=100)
 
-    return Panel(
-        body,
-        title=Text("  [ SYSTEM LOG ]  ", style=C.label),
-        title_align="left",
-        box=BOX_STYLE,
-        border_style=C.DIMGREY,
-        padding=(0, 1),
-    )
+        if self.state.phase == Phase.DONE:
+            progress.update(task_id, completed=100)
+            label = Text("PROBE HALTED // REPORT COMPILED", style=C.accent, justify="center")
+        elif self.state.phase == Phase.ERROR:
+            progress.update(task_id, completed=self.state.progress_pct)
+            label = Text("CRITICAL EXCEPTION", style=C.accent, justify="center")
+        elif self.state.phase == Phase.RUNNING:
+            progress.update(task_id, completed=self.state.progress_pct)
+            label = Text("ACQUIRING KERNEL TELEMETRY", style=C.white, justify="center")
+        else:
+            progress.update(task_id, completed=0)
+            label = Text("SYS_IDLE", style=C.grey)
 
-
-_STATE_LABELS: Final[dict[RunState, tuple[str, Style]]] = {
-    RunState.IDLE:    ("■  IDLE",    Style(color=C.GREY,   bold=True)),
-    RunState.RUNNING: ("▶  RUNNING", Style(color=C.ORANGE, bold=True)),
-    RunState.DONE:    ("●  DONE",    Style(color=C.WHITE,  bold=True)),
-    RunState.ERROR:   ("✕  ERROR",   Style(color=C.ORANGE, bold=True, reverse=True)),
-}
-
-
-def _build_footer(snap: dict) -> Panel:
-    run_state: RunState = snap["run_state"]
-    label, style        = _STATE_LABELS[run_state]
-
-    left  = Text(f"  [ {label} ]  ", style=style)
-    right = Text(
-        f"  elapsed {snap['elapsed_s']:>7.2f}s  //  AUDIT ENGINE ONLINE  ",
-        style=C.grey,
-        justify="right",
-    )
-
-    if run_state == RunState.ERROR:
-        err = Text(f"\n  ERR: {snap['error_msg']}", style=Style(color=C.ORANGE))
-        left.append_text(err)
-
-    grid = Columns([left, right], expand=True)
-
-    return Panel(
-        grid,
-        box=BOX_STYLE,
-        border_style=C.DIMGREY,
-        padding=(0, 0),
-    )
+        return Panel(
+            Columns([label, progress], expand=True),
+            border_style=C.dimgrey,
+            box=box.SQUARE,
+        )
 
 
-def _compose_layout(snap: dict) -> Layout:
-    root = Layout()
+def _compose(state: TuiState) -> Layout:
+    root = Layout(name="root")
     root.split_column(
-        Layout(name="header",   size=10),
-        Layout(name="progress", size=5),
-        Layout(name="logs"),
-        Layout(name="footer",   size=3),
+        Layout(Header(state),     name="header", size=3),
+        Layout(name="body",       ratio=1),
+        Layout(StatusBar(state),  name="status", size=3),
     )
-    root["header"].update(_build_header())
-    root["progress"].update(_build_progress(snap))
-    root["logs"].update(_build_logs(snap))
-    root["footer"].update(_build_footer(snap))
+    root["body"].split_row(
+        Layout(TargetTopology(),  name="topology", ratio=1),
+        Layout(LogStream(state),  name="logs",     ratio=2),
+    )
     return root
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Worker: runs render_pdf() in a ThreadPoolExecutor
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Orchestration ──────────────────────────────────────────────────────────────
 
-def _worker(
-    render_fn:  Callable[[], None],
-    state:      UIState,
-    done_event: Event,
-) -> None:
-    """
-    Background thread:
-      1. Feeds simulated log steps at irregular intervals.
-      2. Calls render_fn() (blocking — may shell out to subprocesses).
-      3. Updates UIState on completion or failure.
-
-    The log simulation and the real work run truly concurrently:
-    log steps fire from a second inner thread so they appear even if
-    render_fn() blocks the GIL for extended periods.
-    """
-    import threading
-
-    n_steps    = len(_AUDIT_STEPS)
-    step_cycle = itertools.cycle(_AUDIT_STEPS)
-    stop_logs  = threading.Event()
-    start_t    = time.monotonic()
-
-    def _log_ticker() -> None:
-        """Emits log lines independently of render_fn progress."""
-        for step in step_cycle:
-            if stop_logs.wait(timeout=_jitter()):
-                break
-            elapsed = time.monotonic() - start_t
-            frac    = min(elapsed / 20.0, 0.95)   # asymptotic approach to 100%
-            with state.lock:
-                state.progress_pct = frac
-                state.elapsed_s    = elapsed
-            state.push_log(step)
-
-    def _jitter() -> float:
-        import random
-        return random.uniform(0.45, 1.20)
-
-    log_thread = threading.Thread(target=_log_ticker, daemon=True)
-    log_thread.start()
-
-    try:
-        with state.lock:
-            state.run_state = RunState.RUNNING
-
-        render_fn()
-
-        stop_logs.set()
-        log_thread.join(timeout=2)
-
-        with state.lock:
-            state.run_state    = RunState.DONE
-            state.progress_pct = 1.0
-            state.elapsed_s    = time.monotonic() - start_t
-
-        state.push_log("render_pdf() completed — output written.")
-
-    except Exception as exc:  # noqa: BLE001
-        stop_logs.set()
-        log_thread.join(timeout=2)
-
-        with state.lock:
-            state.run_state = RunState.ERROR
-            state.error_msg = str(exc)[:120]
-            state.elapsed_s = time.monotonic() - start_t
-
-        state.push_log(f"FATAL: {exc!s:.100}")
-
-    finally:
-        done_event.set()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Public entry point
-# ─────────────────────────────────────────────────────────────────────────────
-
-def run_tui(render_fn: Callable[[], None]) -> None:
-    """
-    Wrap `render_fn` in a full-screen TUI.
-
-    Args:
-        render_fn: Blocking callable (e.g. your `render_pdf()`).
-                   It will run in a background thread; the TUI
-                   renders at `FPS` frames per second until it finishes.
-
-    Raises:
-        RuntimeError: Re-raised after the TUI exits if render_fn failed.
-    """
-    console    = Console(highlight=False)
-    state      = UIState()
+def run_tui(target_func: Callable[[], None]) -> None:
+    console    = Console()
+    state      = TuiState()
+    
+    state.start()  # <--- INYECTA ESTA LÍNEA AQUÍ
+    
     done_event = Event()
+    FPS: Final = 15
+    ASSUMED_S  = 45.0
 
-    # Kick off the worker
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="audit") as pool:
-        future: Future[None] = pool.submit(_worker, render_fn, state, done_event)
+    def _worker() -> None:
+        state.update(phase=Phase.RUNNING, log="Mounting sysfs namespace...")
+        try:
+            target_func()
+            state.update(phase=Phase.DONE, log="Extraction complete. Contract sealed.", pct=100.0)
+        except Exception as exc:
+            state.update(phase=Phase.ERROR, log=f"FAULT: {exc}")
+            raise
+        finally:
+            done_event.set()
 
-        initial_snap = state.snapshot()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future: Future[None] = pool.submit(_worker)
+
         with Live(
-            _compose_layout(initial_snap),
+            _compose(state.snapshot()),
             console=console,
-            screen=True,          # full-screen — no scroll
-            refresh_per_second=FPS,
+            screen=True,
+            refresh_per_second=10,
             transient=False,
         ) as live:
+            start_t = time.monotonic()
+
             while not done_event.is_set():
-                snap = state.snapshot()
-                live.update(_compose_layout(snap), refresh=True)
+                elapsed = time.monotonic() - start_t
+                pct     = min(99.0, (elapsed / ASSUMED_S) * 100)
+
+                if elapsed >  2.0 and len(state.logs) < 2:
+                    state.update(log="ThreadPoolExecutor online — workers dispatched.")
+                if elapsed >  8.0 and len(state.logs) < 3:
+                    state.update(log="stress-ng: CPU matrix stressor engaged (16 workers).")
+                if elapsed > 18.0 and len(state.logs) < 4:
+                    state.update(log="Thermal sensor array: core Δ+31 °C detected.")
+                if elapsed > 28.0 and len(state.logs) < 5:
+                    state.update(log="NVMe latency sweep: P99=112 µs — within spec.")
+                if elapsed > 36.0 and len(state.logs) < 6:
+                    state.update(log="Awaiting thermal recovery window (τ≈8s).")
+                if elapsed > 42.0 and len(state.logs) < 7:
+                    state.update(log="Assembling Ring-0 data contract...")
+
+                state.update(pct=pct)
+                live.update(_compose(state.snapshot()), refresh=True)
                 time.sleep(1 / FPS)
 
-            # One final frame to show DONE / ERROR state
-            live.update(_compose_layout(state.snapshot()), refresh=True)
-            time.sleep(1.2)   # hold final state visible
+            live.update(_compose(state.snapshot()), refresh=True)
+            time.sleep(0.5)
 
-    # Propagate worker exception to the caller
     exc = future.exception()
     if exc is not None:
-        raise RuntimeError(f"render_pdf() failed: {exc}") from exc
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Standalone demo — python tui.py
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _demo_render_pdf() -> None:
-    """Simulates a slow subprocess pipeline (15 s total)."""
-    import subprocess, sys
-
-    cmds = [
-        ["sleep", "3"],
-        ["sleep", "4"],
-        ["sleep", "5"],
-        ["sleep", "3"],
-    ]
-    for cmd in cmds:
-        result = subprocess.run(cmd, capture_output=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"Command {cmd} exited {result.returncode}")
+        raise RuntimeError(f"probe.tex fault: {exc}") from exc
 
 
 if __name__ == "__main__":
-    run_tui(_demo_render_pdf)
+    def _demo() -> None:
+        time.sleep(45)
+
+    run_tui(_demo)

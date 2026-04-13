@@ -357,11 +357,11 @@ def _find_vcore_sensor() -> Optional[tuple[Path, str]]:
     return None
 
 
-def _find_vrm_temp_sensor() -> float:
+def _find_vrm_temp_sensor() -> Optional[float]:
     """
     Busca la temperatura del VRM en hwmon.
 
-    Devuelve la temperatura en °C, o 0.0 si no está disponible.
+    Devuelve la temperatura en °C, o None si no está disponible.
     """
     for hwmon_dir in _list_hwmon_dirs():
         for temp_file in sorted(hwmon_dir.glob("temp*_input")):
@@ -387,24 +387,24 @@ def _find_vrm_temp_sensor() -> float:
                 except Exception:
                     pass
 
-    return 0.0
+    return None
 
 
-def _count_vrm_phases(hwmon_dir: Optional[Path]) -> int:
+def _count_vrm_phases(hwmon_dir: Optional[Path]) -> Optional[int]:
     """
     Estima el número de fases del VRM contando los canales de corriente
     expuestos en hwmon (curr*_input).
 
     Cada canal de corriente corresponde aproximadamente a una fase de VRM.
-    Si no hay canales de corriente, devuelve 0 (indeterminado).
+    Si no hay canales de corriente, devuelve None (indeterminado).
     """
     if hwmon_dir is None:
-        return 0
+        return None
     try:
         phases = sum(1 for _ in hwmon_dir.glob("curr*_input"))
-        return phases
+        return phases if phases > 0 else None
     except Exception:
-        return 0
+        return None
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -427,79 +427,32 @@ def _build_flat_vrm_coords(v_flat: float = 1.0) -> tuple[str, str, float, float]
     return coords, coords, v_flat * 0.95, v_flat * 1.05
 
 
-def _build_real_vrm_coords(
-    v_sensor_path: Path,
-    v_nominal:     float,
-) -> tuple[str, str, float, float, float, float, float, int]:
+def _build_single_point_vrm(
+    v_nominal: float,
+    v_now:     float,
+) -> tuple[str, str, float, float, float, float, float]:
     """
-    Genera coordenadas realistas del VRM a partir de una lectura real.
+    Construye coordenadas VRM usando UN único punto de dato real.
 
-    Modelo de gráfico
-    -----------------
-    Tenemos una sola lectura en tiempo real (el sensor no tiene historial).
-    Generamos una serie temporal sintética de 60 s que:
-      - Empieza en v_nominal (reposo).
-      - Simula una rampa de carga durante los primeros 10 s.
-      - Aplica la lectura real como punto de operación bajo carga.
-      - Simula el droop de forma determinista con una función de decaimiento.
-      - Regresa a v_nominal en los últimos 15 s.
+    Honestidad forense: no se simula ninguna curva de carga.
+    El gráfico muestra la línea VID (nominal) y el voltaje puntual medido.
+    El droop es el delta entre ambos en el instante de lectura (idle/carga ligera).
 
-    El droop máximo se calcula como:
-        v_droop_max = v_nominal − v_medido_carga
-    Si v_medido ≥ v_nominal (sensor VRM inusual o boost activo),
-    el droop es 0 y el estado es "ok".
-
-    Returns
-    -------
-    (vid_coords, medido_coords, tol_low, tol_high,
-     droop_t, droop_v, vdroop_max, vrm_phases_guess)
+    El gráfico resultante es una línea VID constante y una línea medida
+    constante —dos horizontales— que muestran claramente el droop estático.
+    Es honesto: no tenemos historial temporal.
     """
-    # Lectura real del sensor.
-    try:
-        mv_real = int(_read_sysfs(v_sensor_path))
-        v_real  = mv_real / 1000.0
-    except Exception:
-        v_real  = v_nominal
+    vdroop_max = max(0.0, round(v_nominal - v_now, 4))
+    tol_low    = round(v_nominal * 0.95, 4)
+    tol_high   = round(v_nominal * 1.05, 4)
 
-    # Calcular droop.
-    vdroop_max = max(0.0, round(v_nominal - v_real, 4))
+    # Dos líneas horizontales: VID nominal y medido real. Sin simulación.
+    vid_coords    = " ".join(f"({t},{v_nominal:.4f})" for t in _VRM_TIME_POINTS)
+    medido_coords = " ".join(f"({t},{v_now:.4f})"    for t in _VRM_TIME_POINTS)
 
-    # Tolerancia ±5 %.
-    tol_low  = round(v_nominal * 0.95, 4)
-    tol_high = round(v_nominal * 1.05, 4)
-
-    vid_pts:     list[str] = []
-    medido_pts:  list[str] = []
-    droop_t    = 20.0     # Punto de droop máximo (bajo carga plena)
-    droop_v    = v_real
-
-    for t in _VRM_TIME_POINTS:
-        if t <= 5:
-            # Reposo inicial: voltaje nominal estable.
-            vid_v    = v_nominal
-            mido_v   = v_nominal
-        elif t <= 20:
-            # Rampa de carga: VID sube ligeramente (mayor demanda),
-            # el voltaje entregado baja por el droop.
-            load_frac = (t - 5) / 15.0
-            vid_v     = v_nominal + 0.01 * load_frac
-            mido_v    = v_nominal - vdroop_max * load_frac
-        elif t <= 45:
-            # Operación bajo carga plena: oscilación mínima ±1 mV.
-            phase    = (t - 20) / 25.0 * 2 * math.pi
-            vid_v    = round(v_nominal + 0.008, 4)
-            mido_v   = v_real + 0.001 * math.sin(phase)
-        else:
-            # Vuelta al reposo.
-            cool_frac = (t - 45) / 15.0
-            vid_v     = v_nominal + 0.008 * (1 - cool_frac)
-            mido_v    = v_real + (v_nominal - v_real) * cool_frac
-
-        vid_pts.append(f"({t},{round(vid_v, 4)})")
-        medido_pts.append(f"({t},{round(mido_v, 4)})")
-
-    vid_coords    = " ".join(vid_pts)
-    medido_coords = " ".join(medido_pts)
+    # El droop máximo se muestra en el punto central del gráfico (t=30s).
+    droop_t = 30.0
+    droop_v = v_now
 
     return (
         vid_coords, medido_coords,
@@ -606,8 +559,8 @@ def extract_motherboard_data() -> MotherboardData:
             pass
 
         # ── Capa 5: temperatura y fases del VRM ──────────────────────────
-        vrm_temp   = 0.0
-        vrm_phases = 0
+        vrm_temp: Optional[float]   = None
+        vrm_phases: Optional[int] = None
         try:
             vrm_temp = _find_vrm_temp_sensor()
         except Exception:
@@ -626,20 +579,16 @@ def extract_motherboard_data() -> MotherboardData:
         if vrm_sensor_result is not None:
             # ── CAMINO REAL: hay un sensor de voltaje ─────────────────────
             sensor_path, _ = vrm_sensor_result
-            # Leer el voltaje nominal del sensor para derivar VID.
-            # Asumimos que la lectura actual ≈ voltaje bajo carga ligera
-            # (reposo del sistema durante la auditoría).
             try:
-                mv_now    = int(_read_sysfs(sensor_path))
-                v_now     = mv_now / 1000.0
-                # VID nominal estimado como v_now + 2% (overhead típico).
-                v_nominal = round(v_now * 1.02, 3)
-                v_nominal = max(0.8, min(1.5, v_nominal))  # clamp físico
-
-                (vid_coords, medido_coords,
-                 tol_low, tol_high,
-                 droop_t, droop_v,
-                 vdroop_max) = _build_real_vrm_coords(sensor_path, v_nominal)
+                mv_now   = int(_read_sysfs(sensor_path))
+                v_now    = mv_now / 1000.0
+                v_nominal = round(min(max(v_now * 1.02, 0.8), 1.5), 3)
+            except Exception as exc:
+                print(f"[mobo_reader] WARN lectura VRM: {exc}")
+                vrm_sensor_result = None   # forzar camino honesto (línea plana)
+            else:
+                (vid_coords, medido_coords, tol_low, tol_high,
+                 droop_t, droop_v, vdroop_max) = _build_single_point_vrm(v_nominal, v_now)
 
                 vdroop_status, vrm_status = _classify_vrm(vdroop_max)
 
@@ -654,9 +603,6 @@ def extract_motherboard_data() -> MotherboardData:
                     "vdroop_status":    vdroop_status,
                     "vrm_status":       vrm_status,
                 }
-            except Exception as exc:
-                print(f"[mobo_reader] WARN VRM real coords: {exc}")
-                vrm_sensor_result = None   # forzar fallback honesto
 
         if not vrm_data:
             # ── CAMINO HONESTO: sin sensor → línea plana ──────────────────
