@@ -814,32 +814,40 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
 
 
 % ════════════════════════════════════════════════════════════════════════════
-%  SECCIÓN 3 --- ALMACENAMIENTO NO VOLÁTIL (SSD/NVMe o HDD Mecánico)
+%  SECCIÓN 3 — ALMACENAMIENTO NO VOLÁTIL
+%  Reemplaza completa la Sección 3 original.
 %
-%  NOTA DE INTEGRACIÓN:
-%  Reemplazar TODA la Sección 3 original en reporte_base.tex por este bloque.
-%  El resto del documento permanece intacto.
+%  ARQUITECTURA DEL LOOP
+%  ─────────────────────
+%  storage_list  es una list[dict] inyectada por to_jinja_context().
+%  Cada `drive` es el dict plano de un StorageData individual.
+%  Acceso: drive.nvme_model, drive.is_hdd, etc.
+%
+%  Divisor táctico al final de cada iteración excepto la última:
+%  if not loop.last: (divisor) endif
 % ════════════════════════════════════════════════════════════════════════════
 \section{Almacenamiento No Volátil}
 
+[% for drive in storage_list %]
+
 \begin{componentinfo}
   \small
-  \textbf{Dispositivo:}\ \texttt{<< nvme_device >>}\hfill
-  \textbf{Modelo:}\ \mv{<< nvme_model >>}\hfill
-  \textbf{Capacidad:}\ \mv{<< nvme_capacity >>\ GB}\hfill
-  \textbf{FW:}\ << nvme_firmware >>\hfill
-  \textbf{Horas de uso:}\ \mv{<< nvme_hours >>\ h}\hfill
-  \textbf{Tipo:}\ [% if is_hdd %]\mv{HDD Mecánico}[% else %]\mv{SSD/NVMe}[% endif %]
+  \textbf{UNIDAD << loop.index >>/<< loop.length >>:}\ \texttt{<< drive.nvme_device >>}\hfill
+  \textbf{Modelo:}\ \mv{<< drive.nvme_model >>}\hfill
+  \textbf{Tipo:}\ [% if drive.is_hdd %]\mv{HDD Mecánico}[% else %]\mv{SSD/NVMe}[% endif %]\\[4pt]
+  \textbf{Capacidad:}\ \mv{<< drive.nvme_capacity >>\ GB}\hfill
+  \textbf{FW:}\ << drive.nvme_firmware >>\hfill
+  \textbf{Horas de uso:}\ \mv{<< drive.nvme_hours >>\ h}
 \end{componentinfo}
 
 \vspace{0.5cm}
 
-[% if is_hdd %]
+[% if drive.is_hdd %]
 % ────────────────────────────────────────────────────────────────────────────
 %  RAMA HDD: Diagnóstico de Cinemática Mecánica
 % ────────────────────────────────────────────────────────────────────────────
 
-\subsection{Cinemática Mecánica del Cabezal y Superficie del Plato}
+\subsection*{Cinemática Mecánica del Cabezal y Superficie del Plato}
 
 \begin{minipage}[t]{0.56\linewidth}
   \vspace{0pt}
@@ -847,133 +855,76 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
     \toprule
     \thcell{Parámetro Mecánico} & \thcell{Valor} & \thcell{Estado} \\
     \midrule
-    % ── Spin-Up Time (SMART ID 3) ─────────────────────────────────────
-    Spin-Up Time (ID 3) &
-      [% if hdd_spin_up_time is not none %]%
-        \mv{<< hdd_spin_up_time >>\ ms}%
-      [% else %]%
-        \textcolor{AMSlate}{\textit{N/D}}%
-      [% endif %] & --- \\
+    Spin-Up Time (ID 3) & [% if drive.hdd_spin_up_time is not none %]\mv{<< drive.hdd_spin_up_time >>\ ms}[% else %]\textit{N/D}[% endif %] & --- \\
     \rowalt
-    % ── Seek Latency (fio randread 4K QD1) ───────────────────────────
-    Seek Latency media (fio) &
-      [% if hdd_seek_latency_ms is not none %]%
-        \mv{<< hdd_seek_latency_ms >>\ ms}%
-      [% else %]%
-        \textcolor{AMSlate}{\textit{N/D}}%
-      [% endif %] &
-      [% if hdd_seek_latency_ms is not none %]%
-        [% if hdd_seek_latency_ms > 25.0 %]\badgewarn[% else %]\badgeok[% endif %]%
-      [% else %]%
-        \badgeinfo%
-      [% endif %] \\
-    % ── Reallocated Sector Count (SMART ID 5) ────────────────────────
-    Sectores Reasignados (ID 5) &
-      [% if hdd_reallocated_sectors is not none %]%
-        \mv{<< hdd_reallocated_sectors >>}%
-      [% else %]%
-        \textcolor{AMSlate}{\textit{N/D}}%
-      [% endif %] &
-      [% if hdd_reallocated_sectors is not none %]%
-        [% if hdd_reallocated_sectors > 0 %]\badgefail[% else %]\badgeok[% endif %]%
-      [% else %]%
-        \badgeinfo%
-      [% endif %] \\
+    Seek Latency media & [% if drive.hdd_seek_latency_ms is not none %]\mv{<< drive.hdd_seek_latency_ms >>\ ms}[% else %]\textit{N/D}[% endif %] & [% if drive.hdd_seek_latency_ms is not none %][% if drive.hdd_seek_latency_ms > 25.0 %]\badgewarn[% else %]\badgeok[% endif %][% else %]\badgeinfo[% endif %] \\
+    Sectores Reasignados & [% if drive.hdd_reallocated_sectors is not none %]\mv{<< drive.hdd_reallocated_sectors >>}[% else %]\textit{N/D}[% endif %] & [% if drive.hdd_reallocated_sectors is not none %][% if drive.hdd_reallocated_sectors > 0 %]\badgefail[% else %]\badgeok[% endif %][% else %]\badgeinfo[% endif %] \\
     \rowalt
-    % ── Command Timeout (SMART ID 188) ───────────────────────────────
-    Command Timeouts (ID 188) &
-      [% if hdd_command_timeouts is not none %]%
-        \mv{<< hdd_command_timeouts >>}%
-      [% else %]%
-        \textcolor{AMSlate}{\textit{N/D}}%
-      [% endif %] &
-      [% if hdd_command_timeouts is not none %]%
-        [% if hdd_command_timeouts > 0 %]\badgefail[% else %]\badgeok[% endif %]%
-      [% else %]%
-        \badgeinfo%
-      [% endif %] \\
+    Command Timeouts & [% if drive.hdd_command_timeouts is not none %]\mv{<< drive.hdd_command_timeouts >>}[% else %]\textit{N/D}[% endif %] & [% if drive.hdd_command_timeouts is not none %][% if drive.hdd_command_timeouts > 0 %]\badgefail[% else %]\badgeok[% endif %][% else %]\badgeinfo[% endif %] \\
     \bottomrule
   \end{tabularx}
-
-  \vspace{0.25cm}
-  {\scriptsize\color{AMSlate}
-   Seek Latency medida con \texttt{fio randread 4K QD1, runtime=10s}.
-   Umbral de degradación: $>$25 ms.}
 \end{minipage}%
 \hfill
 \begin{minipage}[t]{0.41\linewidth}
   \vspace{0pt}
-  % ── Bloque de estado condicional ──────────────────────────────────
-  [% if (hdd_reallocated_sectors is not none and hdd_reallocated_sectors > 0)
-     or (hdd_command_timeouts is not none and hdd_command_timeouts > 0) %]
+  % --- AQUÍ ESTABA EL ERROR: Asegúrate de tener UN SOLO 'if' inicial ---
+  [% if (drive.hdd_reallocated_sectors is not none and drive.hdd_reallocated_sectors > 0) or (drive.hdd_command_timeouts is not none and drive.hdd_command_timeouts > 0) %]
   \begin{amboxcrit}{Daño Físico / Fallo de Actuador}
     \scriptsize
-    [% if hdd_reallocated_sectors is not none and hdd_reallocated_sectors > 0 %]
-    \textbf{<< hdd_reallocated_sectors >>} sector(es) reasignado(s).
-    Daño físico confirmado en el plato.\\[3pt]
+    [% if drive.hdd_reallocated_sectors is not none and drive.hdd_reallocated_sectors > 0 %]
+    \textbf{<< drive.hdd_reallocated_sectors >>} sector(es) reasignado(s). Daño físico confirmado.\\[3pt]
     [% endif %]
-    [% if hdd_command_timeouts is not none and hdd_command_timeouts > 0 %]
-    \textbf{<< hdd_command_timeouts >>} timeout(s) de comando (ID 188).
-    Inestabilidad de actuador.\\[3pt]
+    [% if drive.hdd_command_timeouts is not none and drive.hdd_command_timeouts > 0 %]
+    \textbf{<< drive.hdd_command_timeouts >>} timeout(s) (ID 188). Inestabilidad de actuador.\\[3pt]
     [% endif %]
     \textbf{Backup inmediato mandatorio.}
   \end{amboxcrit}
-  [% elif hdd_seek_latency_ms is not none and hdd_seek_latency_ms > 25.0 %]
+  [% elif drive.hdd_seek_latency_ms is not none and drive.hdd_seek_latency_ms > 25.0 %]
   \begin{amboxwarn}{Degradación Cinemática}
-    \scriptsize
-    Seek latency: \mv{<< hdd_seek_latency_ms >>\ ms}\\
-    (umbral: 25 ms).\\[3pt]
-    El cabezal pierde agilidad mecánica.\\
-    Planificar reemplazo preventivo.
+    \scriptsize Seek latency: \mv{<< drive.hdd_seek_latency_ms >>\ ms}. El cabezal pierde agilidad mecánica.
   \end{amboxwarn}
   [% else %]
-  \begin{amboxok}{Cinemática Mecánica Normal}
-    \scriptsize
-    Sin sectores reasignados ni timeouts.\\
-    [% if hdd_seek_latency_ms is not none %]
-    Seek latency: \mv{<< hdd_seek_latency_ms >>\ ms} --- dentro del rango nominal.
-    [% else %]
-    Seek latency no medida (fio no disponible).
-    [% endif %]
+  \begin{amboxok}{Cinemática Normal}
+    \scriptsize [% if drive.hdd_seek_latency_ms is not none %]Seek latency: \mv{<< drive.hdd_seek_latency_ms >>\ ms}.[% endif %] Parámetros mecánicos en rango óptimo.
   \end{amboxok}
   [% endif %]
 \end{minipage}
 
 \vspace{0.5cm}
 
-\subsection{Métricas SMART de Superficie y Desgaste HDD}
+\subsection*{Métricas SMART de Superficie y Desgaste HDD}
 
 \begin{tabularx}{\linewidth}{@{} X r @{}}
   \toprule
   \thcell{Atributo SMART} & \thcell{Valor} \\
   \midrule
-  Horas de encendido (Power-On Hours)  & \mv{<< nvme_hours >>\ h} \\
+  Horas de encendido (Power-On Hours)  & \mv{<< drive.nvme_hours >>\ h} \\
   \rowalt
   Spin-Up Time (ID 3, raw)             &
-    [% if hdd_spin_up_time is not none %]\mv{<< hdd_spin_up_time >>\ ms}[% else %]\textcolor{AMSlate}{\textit{N/D}}[% endif %] \\
+    [% if drive.hdd_spin_up_time is not none %]\mv{<< drive.hdd_spin_up_time >>\ ms}[% else %]\textcolor{AMSlate}{\textit{N/D}}[% endif %] \\
   Sectores Reasignados (ID 5)          &
-    [% if hdd_reallocated_sectors is not none %]\mv{<< hdd_reallocated_sectors >>}[% else %]\textcolor{AMSlate}{\textit{N/D}}[% endif %] \\
+    [% if drive.hdd_reallocated_sectors is not none %]\mv{<< drive.hdd_reallocated_sectors >>}[% else %]\textcolor{AMSlate}{\textit{N/D}}[% endif %] \\
   \rowalt
   Command Timeouts (ID 188)            &
-    [% if hdd_command_timeouts is not none %]\mv{<< hdd_command_timeouts >>}[% else %]\textcolor{AMSlate}{\textit{N/D}}[% endif %] \\
+    [% if drive.hdd_command_timeouts is not none %]\mv{<< drive.hdd_command_timeouts >>}[% else %]\textcolor{AMSlate}{\textit{N/D}}[% endif %] \\
   Seek Latency media (fio, 10 s)       &
-    [% if hdd_seek_latency_ms is not none %]\mv{<< hdd_seek_latency_ms >>\ ms}[% else %]\textcolor{AMSlate}{\textit{N/D --- instalar fio}}[% endif %] \\
+    [% if drive.hdd_seek_latency_ms is not none %]\mv{<< drive.hdd_seek_latency_ms >>\ ms}[% else %]\textcolor{AMSlate}{\textit{N/D --- instalar fio}}[% endif %] \\
   \bottomrule
 \end{tabularx}
 
 [% else %]
 % ────────────────────────────────────────────────────────────────────────────
-%  RAMA SSD/NVMe: Latencia I/O y Desgaste NAND (sin cambios respecto a v1.0)
+%  RAMA SSD/NVMe
 % ────────────────────────────────────────────────────────────────────────────
 
 \begin{componentinfo}
   \small
-  \textbf{TBW restante:}\ \mv{<< nvme_tbw_remaining >>\ TB}\ de\ << nvme_tbw_rated >>\ TB
+  \textbf{TBW restante:}\ \mv{<< drive.nvme_tbw_remaining >>\ TB}\ de\ << drive.nvme_tbw_rated >>\ TB
 \end{componentinfo}
 
 \vspace{0.5cm}
 
-\subsection{Distribución de Latencia de Cola I/O (Histograma Logarítmico)}
+\subsection*{Distribución de Latencia de Cola I/O (Histograma Logarítmico)}
 
 \begin{center}
 \begin{tikzpicture}
@@ -997,53 +948,40 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
     $16{-}32$,$32{-}64$,$64{-}128$,$128{-}256$,${>}256$
   },
   nodes near coords,
-  nodes near coords style = {
-    font=\tiny\bfseries, color=AMText,
-    rotate=80, anchor=west
-  },
+  nodes near coords style = {font=\tiny\bfseries, color=AMText, rotate=80, anchor=west},
   enlarge x limits = 0.07,
   legend pos = north east,
 ]
-  \addplot[
-    fill=AMSlate, draw=AMPrimary, fill opacity=0.82
-  ] coordinates {
-    (b0,[% if lat_b0 == 0 %]1[% else %]<< lat_b0 >>[% endif %])
-    (b1,[% if lat_b1 == 0 %]1[% else %]<< lat_b1 >>[% endif %])
-    (b2,[% if lat_b2 == 0 %]1[% else %]<< lat_b2 >>[% endif %])
-    (b3,[% if lat_b3 == 0 %]1[% else %]<< lat_b3 >>[% endif %])
-    (b4,[% if lat_b4 == 0 %]1[% else %]<< lat_b4 >>[% endif %])
-    (b5,[% if lat_b5 == 0 %]1[% else %]<< lat_b5 >>[% endif %])
-    (b6,[% if lat_b6 == 0 %]1[% else %]<< lat_b6 >>[% endif %])
-    (b7,[% if lat_b7 == 0 %]1[% else %]<< lat_b7 >>[% endif %])
-    (b8,[% if lat_b8 == 0 %]1[% else %]<< lat_b8 >>[% endif %])
-    (b9,[% if lat_b9 == 0 %]1[% else %]<< lat_b9 >>[% endif %])
+  \addplot[fill=AMSlate, draw=AMPrimary, fill opacity=0.82] coordinates {
+    (b0,[% if drive.lat_b0 == 0 %]1[% else %]<< drive.lat_b0 >>[% endif %])
+    (b1,[% if drive.lat_b1 == 0 %]1[% else %]<< drive.lat_b1 >>[% endif %])
+    (b2,[% if drive.lat_b2 == 0 %]1[% else %]<< drive.lat_b2 >>[% endif %])
+    (b3,[% if drive.lat_b3 == 0 %]1[% else %]<< drive.lat_b3 >>[% endif %])
+    (b4,[% if drive.lat_b4 == 0 %]1[% else %]<< drive.lat_b4 >>[% endif %])
+    (b5,[% if drive.lat_b5 == 0 %]1[% else %]<< drive.lat_b5 >>[% endif %])
+    (b6,[% if drive.lat_b6 == 0 %]1[% else %]<< drive.lat_b6 >>[% endif %])
+    (b7,[% if drive.lat_b7 == 0 %]1[% else %]<< drive.lat_b7 >>[% endif %])
+    (b8,[% if drive.lat_b8 == 0 %]1[% else %]<< drive.lat_b8 >>[% endif %])
+    (b9,[% if drive.lat_b9 == 0 %]1[% else %]<< drive.lat_b9 >>[% endif %])
   };
   \addlegendentry{Frecuencia de operaciones}
-
-  \addplot[
-    color=StatusWarn, dashed, ultra thick, mark=none, forget plot
-  ] coordinates { (b7, 10) (b7, 1000000) };
-  \node[
-    color=StatusWarn, font=\tiny\bfseries, rotate=90, anchor=south
-  ] at (axis cs:b7, 8000) {Umbral P99};
-
+  \addplot[color=StatusWarn, dashed, ultra thick, mark=none, forget plot]
+    coordinates { (b7, 10) (b7, 1000000) };
+  \node[color=StatusWarn, font=\tiny\bfseries, rotate=90, anchor=south]
+    at (axis cs:b7, 8000) {Umbral P99};
 \end{axis}
 \end{tikzpicture}
 \end{center}
 
 \noindent\small
-\textbf{P50:}\ \mv{<< nvme_lat_p50 >>\ $\mu$s}\quad
-\textbf{P95:}\ \mv{<< nvme_lat_p95 >>\ $\mu$s}\quad
-\textbf{P99:}\ \mv{<< nvme_lat_p99 >>\ $\mu$s}\quad
-\textbf{P99.9:}\ \mv{<< nvme_lat_p999 >>\ $\mu$s}
+\textbf{P50:}\ \mv{<< drive.nvme_lat_p50 >>\ $\mu$s}\quad
+\textbf{P95:}\ \mv{<< drive.nvme_lat_p95 >>\ $\mu$s}\quad
+\textbf{P99:}\ \mv{<< drive.nvme_lat_p99 >>\ $\mu$s}\quad
+\textbf{P99.9:}\ \mv{<< drive.nvme_lat_p999 >>\ $\mu$s}
 
 \vspace{0.5cm}
 
-
-% ────────────────────────────────────────────────────────────────────────────
-%  3.2  WAF y Métricas de Desgaste NVMe (SMART Extended)
-% ────────────────────────────────────────────────────────────────────────────
-\subsection{WAF y Métricas de Desgaste NVMe (SMART Extended)}
+\subsection*{WAF y Métricas de Desgaste NVMe (SMART Extended)}
 
 \begin{tabularx}{\linewidth}{@{} X r r c @{}}
   \toprule
@@ -1051,37 +989,45 @@ $\Delta T_{\text{hotspot}} = T_{\text{hotspot}} - T_{\text{edge}} =\ $\mv{<< gpu
   \thcell{Umbral} & \thcell{Estado} \\
   \midrule
   Write Amplification Factor (WAF) &
-    [% if nvme_waf > 0.0 %]
-    \mv{<< nvme_waf >>} & $\leq 3.0$ & [% if nvme_waf_ok %]\badgeok[% else %]\badgewarn[% endif %]
+    [% if drive.nvme_waf > 0.0 %]
+    \mv{<< drive.nvme_waf >>} & $\leq 3.0$ &
+      [% if drive.nvme_waf_ok %]\badgeok[% else %]\badgewarn[% endif %]
     [% else %]
     \mv{N/A (no expuesto por firmware)} & --- & \badgeinfo
     [% endif %] \\
   \rowalt
-  LBA escritos (host)         & \mv{<< nvme_lba_written >>\ TB}  & --- & --- \\
+  LBA escritos (host)         & \mv{<< drive.nvme_lba_written >>\ TB}  & --- & --- \\
   NAND escritas (total)       &
-    [% if nvme_nand_written > 0.0 %]
-    \mv{<< nvme_nand_written >>\ TB}
-    [% else %]
-    \textcolor{AMSlate}{\textit{N/D}}
-    [% endif %] & --- & --- \\
+    [% if drive.nvme_nand_written > 0.0 %]\mv{<< drive.nvme_nand_written >>\ TB}
+    [% else %]\textcolor{AMSlate}{\textit{N/D}}[% endif %] & --- & --- \\
   \rowalt
-  Bloques NAND defectuosos    & \mv{<< nvme_bad_blocks >>}   & $\leq 50$ &
-    [% if nvme_bad_blocks_ok %]\badgeok[% else %]\badgefail[% endif %] \\
-  Spare blocks restantes      & \mv{<< nvme_spare_blocks >>} & $\geq 10$ &
-    [% if nvme_spare_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Bloques NAND defectuosos    & \mv{<< drive.nvme_bad_blocks >>}   & $\leq 50$ &
+    [% if drive.nvme_bad_blocks_ok %]\badgeok[% else %]\badgefail[% endif %] \\
+  Spare blocks restantes      & \mv{<< drive.nvme_spare_blocks >>} & $\geq 10$ &
+    [% if drive.nvme_spare_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
   \rowalt
-  Errores ECC corregibles     & \mv{<< nvme_ecc_errors >>}   & $< 100$ &
-    [% if nvme_ecc_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
-  Temperatura máx. registrada & \mv{<< nvme_t_max >>$^\circ$C} & $< 70^\circ$C &
-    [% if nvme_temp_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Errores ECC corregibles     & \mv{<< drive.nvme_ecc_errors >>}   & $< 100$ &
+    [% if drive.nvme_ecc_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Temperatura máx. registrada & \mv{<< drive.nvme_t_max >>$^\circ$C} & $< 70^\circ$C &
+    [% if drive.nvme_temp_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
   \rowalt
-  Porcentaje de vida restante & \mv{<< nvme_life_pct >>\%} & $\geq 20\%$ &
-    [% if nvme_life_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
+  Porcentaje de vida restante & \mv{<< drive.nvme_life_pct >>\%} & $\geq 20\%$ &
+    [% if drive.nvme_life_ok %]\badgeok[% else %]\badgewarn[% endif %] \\
   \bottomrule
 \end{tabularx}
 
 [% endif %]
-% ─── FIN DE LA BIFURCACIÓN HDD / SSD ────────────────────────────────────────
+% ─── FIN DE RAMA HDD / SSD ──────────────────────────────────────────────────
+
+% ── Divisor táctico entre unidades (omitido después de la última) ───────────
+[% if not loop.last %]
+\vspace{0.8cm}
+\noindent\textcolor{AMBorder}{\rule{\linewidth}{1pt}}
+\vspace{0.5cm}
+[% endif %]
+
+[% endfor %]
+% ─── FIN DEL LOOP storage_list ──────────────────────────────────────────────
 
 \newpage
 
@@ -1495,7 +1441,7 @@ el análisis (condición de carga ligera del sistema operativo).}}
   Procesamiento Central (CPU)   & \textbf{+<< cpu_anomalia >>}  & << cpu_estado_badge >>  & --- \\
   \rowalt
   Procesamiento Gráfico (GPU)   & \textbf{+<< gpu_anomalia >>}  & << gpu_estado_badge >>  & --- \\
-  Almacenamiento NVMe/SSD       & \textbf{+<< nvme_anomalia >>} & << nvme_estado_badge >> & --- \\
+  Almacenamiento Interno        & \textbf{+<< nvme_anomalia >>} & << nvme_estado_badge >> & --- \\
   \rowalt
   Memoria Principal (RAM)       & \textbf{+<< ram_anomalia >>}  & << ram_estado_badge >>  & --- \\
   Placa Base / VRM Energía      & \textbf{+<< mobo_anomalia >>} & << mobo_estado_badge >> & --- \\

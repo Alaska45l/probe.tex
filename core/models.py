@@ -370,41 +370,95 @@ class DiagnosticReport:
     """
     Raíz del modelo de datos de probe.tex.
 
-    CAMBIO v1.1: nvme tipado como StorageData (ex NVMeData).
-    El nombre del campo se preserva para compatibilidad con Jinja2.
+    CHANGELOG v1.2
+    --------------
+    * nvme: StorageData  →  storage_drives: list[StorageData]
+      Soporta análisis multi-disco: NVMe + SATA SSD + HDD mecánicos
+      detectados por _enumerate_storage_devices() en main.py.
+    * to_jinja_context() aplana todos los sub-modelos EXCEPTO storage_drives.
+      La lista se serializa por separado como ``storage_list``
+      (list[dict]) para habilitar iteración Jinja2 sin colisiones de nombres.
     """
 
-    metadata:    ReportMetadata  = field(default_factory=ReportMetadata)
-    cpu:         CPUData         = field(default_factory=CPUData)
-    gpu:         GPUData         = field(default_factory=GPUData)
-    nvme:        StorageData     = field(default_factory=StorageData)   # ← CAMBIADO
-    ram:         RAMData         = field(default_factory=RAMData)
-    motherboard: MotherboardData = field(default_factory=MotherboardData)
-    battery:     BatteryData     = field(default_factory=BatteryData)
-    usb:         USBData         = field(default_factory=USBData)
-    summary:     GlobalSummary   = field(default_factory=GlobalSummary)
+    metadata:       ReportMetadata  = field(default_factory=ReportMetadata)
+    cpu:            CPUData         = field(default_factory=CPUData)
+    gpu:            GPUData         = field(default_factory=GPUData)
+    storage_drives: list            = field(default_factory=list)
+    """list[StorageData] — una entrada por unidad física detectada.
+    El tipo se declara como ``list`` (sin parámetro) para compatibilidad
+    con dataclasses.fields(), que no itera elementos de la lista."""
+    ram:            RAMData         = field(default_factory=RAMData)
+    motherboard:    MotherboardData = field(default_factory=MotherboardData)
+    battery:        BatteryData     = field(default_factory=BatteryData)
+    usb:            USBData         = field(default_factory=USBData)
+    summary:        GlobalSummary   = field(default_factory=GlobalSummary)
 
     def to_jinja_context(self) -> dict:
         """
         Aplana el árbol de dataclasses en un dict plano para Jinja2.
-        El campo `is_hdd` de StorageData queda disponible directamente
-        como variable de plantilla: [% if is_hdd %].
+
+        Arquitectura de aplanamiento
+        ----------------------------
+        Sub-modelos escalares (metadata, cpu, gpu, ram, motherboard,
+        battery, usb, summary) → sus campos se inyectan directamente
+        en el contexto raíz con el nombre del campo como clave.
+
+        storage_drives → NO se aplana de forma escalar.
+          El aplanamiento escalar de una lista de dataclasses colisionaría:
+          si dos discos tienen ``nvme_model``, el segundo sobreescribiría
+          al primero. En su lugar se construye ``storage_list``:
+
+            storage_list: list[dict]
+              Cada elemento es el dict plano de un StorageData individual.
+              Ejemplo de acceso en Jinja2:
+                [% for drive in storage_list %]
+                  << drive.nvme_model >>
+                [% endfor %]
+
+        Returns
+        -------
+        dict
+            Contexto plano listo para ``template.render(**context)``.
         """
         import dataclasses
 
         context: dict = {}
-        sub_models = [
+
+        # ── Aplanamiento escalar de sub-modelos individuales ──────────────
+        # storage_drives queda FUERA de esta lista intencionalmente.
+        scalar_models = [
             self.metadata,
             self.cpu,
             self.gpu,
-            self.nvme,        # StorageData — incluye is_hdd y hdd_*
             self.ram,
             self.motherboard,
             self.battery,
             self.usb,
             self.summary,
         ]
-        for model in sub_models:
+        for model in scalar_models:
             for f in dataclasses.fields(model):
                 context[f.name] = getattr(model, f.name)
+
+        # ── Serialización de storage_drives como lista de dicts ───────────
+        # Cada StorageData se convierte en un dict plano {campo: valor}.
+        # Jinja2 acepta tanto acceso por atributo (drive.nvme_model)
+        # como por clave (drive['nvme_model']) sobre dicts; ambas notaciones
+        # funcionan con el motor de plantillas configurado en main.py.
+        storage_list: list[dict] = []
+        for drive in self.storage_drives:
+            drive_dict: dict = {}
+            for f in dataclasses.fields(drive):
+                drive_dict[f.name] = getattr(drive, f.name)
+            storage_list.append(drive_dict)
+
+        # Garantía: al menos un dict vacío para que el loop Jinja2 no rompa.
+        if not storage_list:
+            import dataclasses as _dc
+            from core.models import StorageData as _SD
+            storage_list = [
+                {f.name: getattr(_SD(), f.name) for f in _dc.fields(_SD())}
+            ]
+
+        context["storage_list"] = storage_list
         return context

@@ -11,7 +11,7 @@ import jinja2
 
 from core.models import (
     DiagnosticReport, ReportMetadata, GlobalSummary,
-    NVMeData, RAMData, MotherboardData, USBData, BatteryData
+    StorageData, NVMeData, RAMData, MotherboardData, USBData, BatteryData
 )
 from core.entropy import evaluate_system_entropy
 from extractors.cpu_reader import extract_cpu_data
@@ -23,46 +23,87 @@ from extractors.usb_reader import extract_usb_data
 from extractors.battery_reader import extract_battery_data
 from tui import run_tui
 
-def _detect_nvme_device() -> str:
+def _enumerate_storage_devices() -> list[str]:
     """
-    Detecta el dispositivo de almacenamiento primario del sistema.
+    Enumera todas las unidades físicas internas conectadas a la placa base.
 
-    Prioridad: NVMe (más rápido, más común en sistemas modernos) → SATA SSD → HDD.
-    Usa /sys/class/block para enumerar sin depender de herramientas externas.
-    El "primario" se define como el disco donde está montado /  (rootfs).
+    Fuente canónica: ``lsblk -J -o NAME,TYPE,TRAN``
+      - TYPE == "disk"     → dispositivo de bloque raíz (no partición).
+      - TRAN == "nvme"     → controladora NVMe (PCIe).
+      - TRAN == "sata"     → controladora SATA (SSD o HDD mecánico).
+      - TRAN == "usb"      → descartado explícitamente (pendrive, externo).
+      - TRAN == None/""    → descartado (dispositivos virtuales, loop, dm).
+
+    Fallback
+    --------
+    Si lsblk falla o no devuelve dispositivos válidos, se retorna
+    ['/dev/nvme0n1'] como último recurso conservador.
+
+    Returns
+    -------
+    list[str]
+        Rutas de nodo de bloque ordenadas: NVMe primero, SATA después.
+        Ej. ['/dev/nvme0n1', '/dev/sda', '/dev/sdb']
     """
-    import subprocess, re
     try:
-        # lsblk JSON es el método más robusto y portable
         out = subprocess.run(
-            ["lsblk", "-J", "-o", "NAME,TYPE,MOUNTPOINT"],
-            capture_output=True, text=True, timeout=5
+            ["lsblk", "-J", "-o", "NAME,TYPE,TRAN"],
+            capture_output=True, text=True, timeout=5,
         ).stdout
-        data = json.loads(out)
+        data    = json.loads(out)
+        nvme_devs: list[str] = []
+        sata_devs: list[str] = []
+
         for dev in data.get("blockdevices", []):
             if dev.get("type") != "disk":
                 continue
-            # Buscar si alguna partición tiene mountpoint "/"
-            for child in dev.get("children", []):
-                if child.get("mountpoint") == "/":
-                    return f"/dev/{dev['name']}"
-    except Exception:
-        pass
+            tran = (dev.get("tran") or "").lower().strip()
+            if tran == "nvme":
+                nvme_devs.append(f"/dev/{dev['name']}")
+            elif tran == "sata":
+                sata_devs.append(f"/dev/{dev['name']}")
+            # tran == "usb" o vacío → ignorado explícitamente
 
-    # Fallback: primer NVMe en /sys/class/nvme/
-    try:
-        nvme_root = Path("/sys/class/nvme")
-        if nvme_root.exists():
-            for ctrl in sorted(nvme_root.iterdir()):
-                # Cada controlador NVMe tiene al menos un namespace nvme0n1
-                ns = sorted(ctrl.glob("nvme*n1"))
-                if ns:
-                    return f"/dev/{ns[0].name}"
-    except Exception:
-        pass
+        devices = nvme_devs + sata_devs
+        if devices:
+            print(f"[main] INFO dispositivos de almacenamiento detectados: {devices}")
+            return devices
 
-    print("[main] WARN no se detectó dispositivo de almacenamiento primario. Usando /dev/nvme0n1.")
-    return "/dev/nvme0n1"
+    except Exception as exc:
+        print(f"[main] WARN _enumerate_storage_devices: {exc}")
+
+    print("[main] WARN enumeración fallida. Fallback a /dev/nvme0n1.")
+    return ["/dev/nvme0n1"]
+
+
+def _extract_all_drives(devices: list[str]) -> list[StorageData]:
+    """
+    Extrae StorageData para cada dispositivo en ``devices`` de forma secuencial.
+
+    La extracción secuencial es correcta para I/O de disco: smartctl y fio
+    no deben ejecutarse en paralelo sobre distintas unidades del mismo
+    controlador SATA/NVMe porque comparten el bus y las lecturas SMART
+    se interferirían con los test de fio activos.
+
+    Si la extracción de un disco individual falla (excepción no anticipada),
+    se registra un aviso y se inserta un StorageData() vacío en su posición
+    para preservar la correspondencia de índices con ``devices``.
+
+    Returns
+    -------
+    list[StorageData]
+        Longitud == len(devices).  Nunca vacía (mínimo un StorageData()).
+    """
+    results: list[StorageData] = []
+    for dev in devices:
+        try:
+            print(f"[main] INFO extrayendo almacenamiento: {dev}")
+            results.append(extract_disk_data(dev))
+        except Exception as exc:
+            print(f"[main] WARN extract_disk_data({dev}): {exc}. "
+                  "Insertando StorageData() vacío.")
+            results.append(StorageData())
+    return results if results else [StorageData()]
 
 def _resolve_outdir(args_outdir: str | None) -> Path:
     if args_outdir:
@@ -89,55 +130,64 @@ def render_pdf(outdir: Path | None = None) -> None:
     print("[*] Iniciando extracción de datos estáticos concurrente...")
     start_time = time.time()
 
-    # Timeouts agresivos por extractor (en segundos)
+    # ── NUEVO: enumerar discos ANTES de lanzar el ThreadPoolExecutor ──────
+    # La enumeración es rápida (lsblk ~50 ms) y nos permite calcular el
+    # timeout de disco dinámicamente según el número de unidades.
+    devices      = _enumerate_storage_devices()
+    disk_timeout = max(130, 130 * len(devices))   # 130 s por unidad
+
     _TIMEOUTS: dict[str, int] = {
-        "disk": 130,    # fio 15s + smartctl 5s + overhead
-        "ram":  620,    # memtester 600s + dmidecode
+        "disk": disk_timeout,
+        "ram":  620,
         "mobo": 40,
         "usb":  15,
         "bat":  15,
-        "cpu":  70,     # stress 30s + cooling 15s + overhead
-        "gpu":  45,     # stress 20s + cooling 10s + overhead
+        "cpu":  70,
+        "gpu":  45,
     }
 
     # FASE 1: extractores sin carga activa (paralelos, seguros)
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        future_disk = executor.submit(extract_disk_data, _detect_nvme_device())
+        # ── CAMBIADO: future único que extrae TODOS los discos ────────────
+        future_disk = executor.submit(_extract_all_drives, devices)
         future_ram  = executor.submit(extract_ram_data)
         future_mobo = executor.submit(extract_motherboard_data)
         future_usb  = executor.submit(extract_usb_data)
         future_bat  = executor.submit(extract_battery_data)
 
+        # ── CAMBIADO: resultado es list[StorageData] ──────────────────────
         try:
-            disk_data = future_disk.result(timeout=_TIMEOUTS["disk"])
+            storage_drives: list[StorageData] = future_disk.result(
+                timeout=_TIMEOUTS["disk"]
+            )
         except concurrent.futures.TimeoutError:
-            print("[main] WARN extractor disk superó timeout. Usando NVMeData() vacío.")
-            disk_data = NVMeData()
+            print("[main] WARN extractor disk superó timeout. "
+                  "Usando [StorageData()] vacío.")
+            storage_drives = [StorageData()]
+
         try:
             ram_data = future_ram.result(timeout=_TIMEOUTS["ram"])
         except concurrent.futures.TimeoutError:
-            print("[main] WARN extractor ram superó timeout. Usando RAMData() vacío.")
+            print("[main] WARN extractor ram superó timeout.")
             ram_data = RAMData()
         try:
             mobo_data = future_mobo.result(timeout=_TIMEOUTS["mobo"])
         except concurrent.futures.TimeoutError:
-            print("[main] WARN extractor mobo superó timeout. Usando MotherboardData() vacío.")
+            print("[main] WARN extractor mobo superó timeout.")
             mobo_data = MotherboardData()
         try:
             usb_data = future_usb.result(timeout=_TIMEOUTS["usb"])
         except concurrent.futures.TimeoutError:
-            print("[main] WARN extractor usb superó timeout. Usando USBData() vacío.")
+            print("[main] WARN extractor usb superó timeout.")
             usb_data = USBData()
         try:
             bat_data = future_bat.result(timeout=_TIMEOUTS["bat"])
         except concurrent.futures.TimeoutError:
-            print("[main] WARN extractor bat superó timeout. Usando BatteryData() vacío.")
+            print("[main] WARN extractor bat superó timeout.")
             bat_data = BatteryData()
 
     print("[*] Extracción estática completada. Iniciando forense activo secuencial...")
 
-    # FASE 2: tests térmicos SECUENCIALES — CPU primero, luego GPU
-    # Sin solapamiento garantizado: el estrés de CPU no contamina GPU y viceversa.
     print("[*]   → Test térmico CPU (30s carga + 15s enfriamiento)...")
     cpu_data = extract_cpu_data()
 
@@ -163,14 +213,15 @@ def render_pdf(outdir: Path | None = None) -> None:
     fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     print("[*] Ejecutando análisis termodinámico y estructural (Invariant)...")
+    # ── CAMBIADO: parámetro renombrado nvme → storage_drives ─────────────
     entropy_data = evaluate_system_entropy(
-        cpu=cpu_data, 
-        gpu=gpu_data, 
-        nvme=disk_data, 
-        ram=ram_data, 
-        mobo=mobo_data, 
-        usb=usb_data,
-        battery=bat_data
+        cpu            = cpu_data,
+        gpu            = gpu_data,
+        storage_drives = storage_drives,   # ← CAMBIADO
+        ram            = ram_data,
+        mobo           = mobo_data,
+        usb            = usb_data,
+        battery        = bat_data,
     )
 
     print("[*] Ensamblando contrato de datos...")
@@ -190,13 +241,13 @@ def render_pdf(outdir: Path | None = None) -> None:
             fecha_reporte=fecha_actual,
             duracion_analisis=f"{duracion_segundos} s"
         ),
-        cpu=cpu_data,
-        gpu=gpu_data,
-        nvme=disk_data,
-        ram=ram_data,
-        motherboard=mobo_data,
-        usb=usb_data,
-        battery=bat_data
+        cpu            = cpu_data,
+        gpu            = gpu_data,
+        storage_drives = storage_drives,   # ← CAMBIADO (era nvme=disk_data)
+        ram            = ram_data,
+        motherboard    = mobo_data,
+        usb            = usb_data,
+        battery        = bat_data,
     )
 
     print("[*] Configurando motor de renderizado Jinja2-LaTeX...")
@@ -211,34 +262,37 @@ def render_pdf(outdir: Path | None = None) -> None:
     template = latex_env.get_template('reporte_base.tex')
     context = report.to_jinja_context()
     
-    # --- INYECCIÓN DEL MOTOR INVARIANT AL CONTEXTO DE LATEX ---
+    # ── context.update(): las claves nvme_* siguen igual ─────────────────
+    # evaluate_system_entropy todavía expone entropy_data.nvme (SubsystemVector
+    # agregado), entropy_data.badge_nvme, entropy_data.accion_nvme, etc.
+    # El template de la Sección 7 los consume sin modificación.
     context.update({
-        "indice_anomalia": entropy_data.total_delta_a,
-        "cpu_anomalia": entropy_data.cpu.delta_a,
-        "gpu_anomalia": entropy_data.gpu.delta_a,
-        "nvme_anomalia": entropy_data.nvme.delta_a,
-        "ram_anomalia": entropy_data.ram.delta_a,
-        "mobo_anomalia": entropy_data.vrm.delta_a,
-        "usb_anomalia": entropy_data.usb.delta_a,
-        "bat_anomalia": entropy_data.battery.delta_a,
-        "cpu_estado_badge": entropy_data.badge_cpu,
-        "gpu_estado_badge": entropy_data.badge_gpu,
-        "nvme_estado_badge": entropy_data.badge_nvme,
-        "ram_estado_badge": entropy_data.badge_ram,
+        "indice_anomalia":   entropy_data.total_delta_a,
+        "cpu_anomalia":      entropy_data.cpu.delta_a,
+        "gpu_anomalia":      entropy_data.gpu.delta_a,
+        "nvme_anomalia":     entropy_data.nvme.delta_a,     # agregado multi-disco
+        "ram_anomalia":      entropy_data.ram.delta_a,
+        "mobo_anomalia":     entropy_data.vrm.delta_a,
+        "usb_anomalia":      entropy_data.usb.delta_a,
+        "bat_anomalia":      entropy_data.battery.delta_a,
+        "cpu_estado_badge":  entropy_data.badge_cpu,
+        "gpu_estado_badge":  entropy_data.badge_gpu,
+        "nvme_estado_badge": entropy_data.badge_nvme,       # peor estado del conjunto
+        "ram_estado_badge":  entropy_data.badge_ram,
         "mobo_estado_badge": entropy_data.badge_mobo,
-        "usb_estado_badge": entropy_data.badge_usb,
-        "bat_estado_badge": entropy_data.badge_bat,
-        "accion_cpu": entropy_data.accion_cpu,
-        "accion_gpu": entropy_data.accion_gpu,
-        "accion_nvme": entropy_data.accion_nvme,
-        "accion_ram": entropy_data.accion_ram,
-        "accion_mobo": entropy_data.accion_mobo,
-        "accion_usb": entropy_data.accion_usb,
-        "accion_bat": entropy_data.accion_bat,
-        "accion_global": entropy_data.accion_global,
-        "estado_global_badge": entropy_data.estado_global_badge,
-        "resumen_ejecutivo": entropy_data.resumen_ejecutivo,
-        "lista_recomendaciones": entropy_data.lista_recomendaciones,
+        "usb_estado_badge":  entropy_data.badge_usb,
+        "bat_estado_badge":  entropy_data.badge_bat,
+        "accion_cpu":        entropy_data.accion_cpu,
+        "accion_gpu":        entropy_data.accion_gpu,
+        "accion_nvme":       entropy_data.accion_nvme,
+        "accion_ram":        entropy_data.accion_ram,
+        "accion_mobo":       entropy_data.accion_mobo,
+        "accion_usb":        entropy_data.accion_usb,
+        "accion_bat":        entropy_data.accion_bat,
+        "accion_global":     entropy_data.accion_global,
+        "estado_global_badge":    entropy_data.estado_global_badge,
+        "resumen_ejecutivo":      entropy_data.resumen_ejecutivo,
+        "lista_recomendaciones":  entropy_data.lista_recomendaciones,
     })
 
     out      = outdir or Path("/tmp")

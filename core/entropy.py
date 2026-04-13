@@ -917,30 +917,110 @@ _RESUMEN_TEMPLATE: dict[EntropyState, str] = {
 # ════════════════════════════════════════════════════════════════════════════
 
 def evaluate_system_entropy(
-    cpu:     CPUData,
-    gpu:     GPUData,
-    nvme:    StorageData,           # ← CAMBIADO: StorageData (ex NVMeData)
-    ram:     RAMData,
-    mobo:    MotherboardData,
-    usb:     USBData,
-    battery: Optional[BatteryData] = None,
+    cpu:            CPUData,
+    gpu:            GPUData,
+    storage_drives: list[StorageData],   # ← CAMBIADO (era: nvme: StorageData)
+    ram:            RAMData,
+    mobo:           MotherboardData,
+    usb:            USBData,
+    battery:        Optional[BatteryData] = None,
 ) -> SystemEntropy:
     """
     Evalúa la entropía física y química del sistema completo.
 
-    CAMBIO v1.1: parámetro `nvme` tipado como StorageData.
-    La bifurcación HDD/SSD ocurre internamente en _eval_storage().
+    CHANGELOG v1.2
+    --------------
+    Parámetro ``nvme: StorageData``  →  ``storage_drives: list[StorageData]``.
+
+    Motor de Entropía Acumulativa Multi-Disco
+    -----------------------------------------
+    1. Se evalúa cada StorageData individualmente con _eval_storage().
+       Cada unidad produce su propio SubsystemVector con ΔA independiente.
+
+    2. Agregación de ΔA:
+         ΔA_storage = Σ ΔA_i   (suma de las anomalías de todos los discos)
+       Un sistema con un SSD sano (ΔA=0) y un HDD con sector reasignado
+       (ΔA=50) reporta ΔA_storage=50 — el daño físico del HDD no se
+       enmascara por la salud del SSD.
+
+    3. Estado Clínico del bloque de almacenamiento:
+         _worst_state(*[v.state for v in vectors])
+       Si el SSD es OPTIMAL y el HDD es CRITICAL → el bloque es CRITICAL.
+       El estado más severo prevalece siempre.
+
+    4. Directivas:
+       Se concatenan las directivas de todos los discos en orden. Las
+       directivas de discos sin anomalías (OPTIMAL) se omiten por
+       _build_directives_latex() (solo incluye DEGRADED/CRITICAL/UNKNOWN).
+
+    5. El campo ``nvme`` de SystemEntropy conserva su nombre para
+       compatibilidad con el contexto Jinja2 del resumen global (Sección 7).
+       Ahora representa el vector agregado del conjunto de almacenamiento,
+       no una unidad individual.
     """
     bat_data: BatteryData = battery if battery is not None else BatteryData()
 
+    # ── Evaluaciones individuales (sin cambios) ───────────────────────────
     vec_cpu     = _eval_cpu(cpu)
     vec_gpu     = _eval_gpu(gpu)
     vec_ram     = _eval_ram(ram)
-    vec_nvme    = _eval_storage(nvme)   # ← CAMBIADO: _eval_storage
     vec_vrm     = _eval_vrm(mobo)
     vec_usb     = _eval_usb(usb)
     vec_battery = _eval_battery(bat_data)
 
+    # ════════════════════════════════════════════════════════════════════
+    #  MOTOR MULTI-DISCO
+    # ════════════════════════════════════════════════════════════════════
+
+    # 1. Evaluar cada disco individualmente
+    drive_vectors: list[SubsystemVector] = [
+        _eval_storage(drive) for drive in storage_drives
+    ]
+
+    # 2. Guard: lista vacía → vector UNKNOWN para no romper el motor global
+    if not drive_vectors:
+        drive_vectors = [SubsystemVector(
+            subsystem    = "STORAGE",
+            delta_a      = 0,
+            state        = EntropyState.UNKNOWN,
+            badge        = _BADGE[EntropyState.UNKNOWN],
+            badge_compat = _BADGE_COMPAT[EntropyState.UNKNOWN],
+            directives   = (
+                _latex_item(
+                    "Sub-sistema Almacenamiento",
+                    "Ningún dispositivo de almacenamiento detectado o enumerado.",
+                ),
+            ),
+        )]
+
+    # 3. ΔA acumulativo: suma de todas las anomalías individuales
+    total_storage_da: int = sum(v.delta_a for v in drive_vectors)
+
+    # 4. Estado clínico: el más severo del conjunto
+    worst_storage_state: EntropyState = _worst_state(
+        *(v.state for v in drive_vectors)
+    )
+
+    # 5. Directivas concatenadas de todos los discos
+    all_storage_directives: tuple[str, ...] = tuple(
+        directive
+        for vec in drive_vectors
+        for directive in vec.directives
+    )
+
+    # 6. SubsystemVector agregado (expuesto como vec_nvme para compat.)
+    vec_nvme = SubsystemVector(
+        subsystem    = "STORAGE",
+        delta_a      = total_storage_da,
+        state        = worst_storage_state,
+        badge        = _BADGE[worst_storage_state],
+        badge_compat = _BADGE_COMPAT[worst_storage_state],
+        directives   = all_storage_directives,
+    )
+
+    # ════════════════════════════════════════════════════════════════════
+
+    # ── Ensamblaje global (sin cambios respecto a v1.1) ───────────────────
     vectors: list[SubsystemVector] = [
         vec_cpu, vec_gpu, vec_ram, vec_nvme, vec_vrm, vec_usb, vec_battery
     ]
@@ -970,7 +1050,7 @@ def evaluate_system_entropy(
     return SystemEntropy(
         cpu     = vec_cpu,
         gpu     = vec_gpu,
-        nvme    = vec_nvme,
+        nvme    = vec_nvme,   # vector agregado multi-disco
         ram     = vec_ram,
         vrm     = vec_vrm,
         usb     = vec_usb,
