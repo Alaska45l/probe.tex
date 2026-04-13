@@ -64,48 +64,22 @@ def _detect_nvme_device() -> str:
     print("[main] WARN no se detectó dispositivo de almacenamiento primario. Usando /dev/nvme0n1.")
     return "/dev/nvme0n1"
 
-def _resolve_outdir(cli_outdir: str | None = None) -> Path:
-    """
-    Determina el directorio de salida para el reporte generado.
+def _resolve_outdir(args_outdir: str | None) -> Path:
+    if args_outdir:
+        p = Path(args_outdir)
+    elif "INVARIANT_OUT" in os.environ:
+        p = Path(os.environ["INVARIANT_OUT"])
+    else:
+        p = Path.cwd()  # PRIMERO intenta usar la carpeta actual
 
-    Jerarquía de resolución
-    -----------------------
-    1. Argumento CLI ``--outdir`` (explícito, máxima prioridad).
-    2. Variable de entorno ``INVARIANT_OUT`` (configurable por el sistema
-       de arranque del Live OS, ej. grub kernel cmdline → udev rule → env).
-    3. Fallback garantizado: ``/tmp`` (tmpfs en RAM, siempre escribible,
-       incluso con raíz squashfs de solo lectura).
-
-    Verificación de escritura
-    -------------------------
-    No se confía en que el directorio exista o sea escribible por su sola
-    existencia. Se intenta crear y se ejecuta un test de escritura atómico
-    (touch + unlink). Si falla → degradación a /tmp con aviso.
-
-    Returns
-    -------
-    Path
-        Directorio de salida garantizado como escribible.
-    """
-    candidate: str | None = cli_outdir or os.environ.get("INVARIANT_OUT")
-
-    if candidate:
-        p = Path(candidate)
-        try:
-            p.mkdir(parents=True, exist_ok=True)
-            probe = p / ".probe_tex_write_test"
-            probe.touch()
-            probe.unlink()
-            print(f"[main] INFO outdir: {p.resolve()}")
-            return p
-        except Exception as exc:
-            print(
-                f"[main] WARN outdir '{candidate}' no escribible ({exc}). "
-                "Degradando a /tmp."
-            )
-
-    print("[main] INFO outdir: /tmp (fallback squashfs-safe)")
-    return Path("/tmp")
+    test_file = p / ".invariant_write_test"
+    try:
+        test_file.touch()
+        test_file.unlink()
+        return p
+    except Exception:
+        print(f"[main] WARN No se puede escribir en {p}. Cayendo a /tmp.")
+        return Path("/tmp")
 
 def render_pdf(outdir: Path | None = None) -> None:
     """
@@ -280,14 +254,16 @@ def render_pdf(outdir: Path | None = None) -> None:
             ["tectonic", "--outdir", str(out), str(tex_path)],
             check=True,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,  # Capturamos el error
+            text=True
         )
         pdf_path = out / "reporte_generado.pdf"
         print(f"[+] ÉXITO: {pdf_path}")
     except FileNotFoundError:
-        print("[-] ERROR: 'tectonic' no encontrado. Instalar: sudo pacman -S tectonic")
-    except subprocess.CalledProcessError:
-        print(f"[-] ERROR: Compilación fallida. Revisar {tex_path}")
+        raise RuntimeError("'tectonic' no encontrado. Instalar: sudo pacman -S tectonic")
+    except subprocess.CalledProcessError as e:
+        # Si Tectonic falla (ej. sin WiFi en Live OS), rompemos la sonda con el log
+        raise RuntimeError(f"Tectonic falló la compilación:\n{e.stderr}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -304,5 +280,8 @@ if __name__ == "__main__":
         ),
     )
     args   = parser.parse_args()
-    outdir = _resolve_outdir(args.outdir)
-    run_tui(lambda: render_pdf(outdir))
+    final_outdir = _resolve_outdir(args.outdir)
+    print(f"[main] INFO outdir: {final_outdir}")
+
+    # Pasamos final_outdir explícitamente a render_pdf
+    run_tui(lambda: render_pdf(final_outdir))
