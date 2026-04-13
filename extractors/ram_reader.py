@@ -56,9 +56,14 @@ _MEMINFO_PATH = Path("/proc/meminfo")
 
 _EDAC_ERROR_WEIGHT: float = 0.01   # % de integridad por error (ajustado por GB)
 
-_MEMTESTER_SIZE:      str = "1G"   # tamaño de la prueba activa
-_MEMTESTER_LOOPS:     int = 1      # número de iteraciones
-_MEMTESTER_TIMEOUT_S: int = 600    # 10 minutos; memtester en 1 GB puede tardar
+# ── Memtester — tamaño dinámico (Live OS Safety) ─────────────────────────────
+# La constante fija _MEMTESTER_SIZE = "1G" se elimina. El tamaño se calcula
+# en tiempo de ejecución mediante _compute_memtester_size().
+_MEMTESTER_MIN_MB:    int   = 64     # piso absoluto
+_MEMTESTER_MAX_MB:    int   = 512    # techo para Live OS (evita OOM en 4 GB)
+_MEMTESTER_FREE_PCT:  float = 0.10   # fracción de MemAvailable a usar
+_MEMTESTER_LOOPS:     int   = 1
+_MEMTESTER_TIMEOUT_S: int   = 600
 
 _DMIDECODE_TIMEOUT: int = 6
 
@@ -285,34 +290,67 @@ def _infer_dual_channel(modules: list[_DimmModule]) -> bool:
 #  CAPA 5 — Prueba Activa: memtester
 # ════════════════════════════════════════════════════════════════════════════
 
-def _run_memtester() -> int:
+def _compute_memtester_size() -> str:
     """
-    Ejecuta ``sudo memtester <_MEMTESTER_SIZE> <_MEMTESTER_LOOPS>`` y
-    devuelve el número de líneas "FAILURE" encontradas en la salida.
+    Calcula el tamaño seguro para memtester en función de la RAM disponible
+    en tiempo de ejecución.
 
-    memtester escribe su progreso en stdout.  Cada sub-prueba termina
-    con "ok" si pasa o con "FAILURE: 0x... != 0x..." si falla.
+    Live OS Safety
+    --------------
+    Un Live OS arrancado desde squashfs+tmpfs puede dejar ≤ 600 MB libres
+    en un equipo de 4 GB.  La constante fija "1G" dispararía el OOM Killer
+    del kernel, matando probe.tex antes de poder emitir el reporte.
 
-    Degradación elegante
-    --------------------
-    * FileNotFoundError  → memtester no instalado: retorna 0 y loguea aviso.
-    * TimeoutExpired     → retorna 0 y loguea aviso (prueba incompleta).
-    * Cualquier otro exc → retorna 0 y loguea aviso.
+    Estrategia
+    ----------
+    1. Lee ``MemAvailable`` de /proc/meminfo (incluye page cache recuperable,
+       más preciso que MemFree en sistemas con tmpfs activo).
+    2. Aplica _MEMTESTER_FREE_PCT (10 %).
+    3. Clampea entre _MEMTESTER_MIN_MB (64) y _MEMTESTER_MAX_MB (512).
+    4. Ante cualquier fallo → fallback conservador de 64 MB.
 
     Returns
     -------
-    int
-        Número de fallos detectados (0 = sin errores o prueba no disponible).
+    str
+        Cadena lista para pasar a memtester, ej. ``"128M"``.
     """
     try:
+        content = _MEMINFO_PATH.read_text()
+        # MemAvailable preferido; MemFree como segundo recurso
+        m = re.search(r"^MemAvailable:\s+(\d+)\s+kB", content, re.MULTILINE)
+        if not m:
+            m = re.search(r"^MemFree:\s+(\d+)\s+kB",      content, re.MULTILINE)
+        if m:
+            free_kb   = int(m.group(1))
+            target_mb = int(free_kb / 1024 * _MEMTESTER_FREE_PCT)
+            clamped   = max(_MEMTESTER_MIN_MB, min(_MEMTESTER_MAX_MB, target_mb))
+            print(
+                f"[ram_reader] INFO memtester: {clamped} MB asignados "
+                f"(10 % de {free_kb // 1024} MB disponibles)"
+            )
+            return f"{clamped}M"
+    except Exception as exc:
+        print(f"[ram_reader] WARN _compute_memtester_size: {exc} → fallback 64M")
+    return f"{_MEMTESTER_MIN_MB}M"
+
+
+def _run_memtester() -> int:
+    """
+    Ejecuta ``sudo memtester <TAMAÑO_DINÁMICO> 1`` y devuelve el número
+    de líneas "FAILURE" encontradas.
+
+    TAMAÑO_DINÁMICO = 10 % de MemAvailable, clampado en [64 MB, 512 MB].
+    Garantiza que el proceso nunca consuma más RAM de la disponible y
+    no active el OOM Killer en entornos Live OS con memoria limitada.
+    """
+    size = _compute_memtester_size()
+    try:
         result = subprocess.run(
-            ["sudo", "memtester", _MEMTESTER_SIZE, str(_MEMTESTER_LOOPS)],
+            ["sudo", "memtester", size, str(_MEMTESTER_LOOPS)],
             capture_output=True,
             text=True,
             timeout=_MEMTESTER_TIMEOUT_S,
         )
-        # memtester puede devolver rc != 0 si detecta errores de memoria;
-        # el contador de fallos lo derivamos del texto, no del rc.
         output   = result.stdout + result.stderr
         failures = len(re.findall(r"\bFAILURE\b", output, re.IGNORECASE))
         if failures:
@@ -324,7 +362,7 @@ def _run_memtester() -> int:
         return 0
     except subprocess.TimeoutExpired:
         print(
-            f"[ram_reader] WARN memtester superó {_MEMTESTER_TIMEOUT_S} s de timeout. "
+            f"[ram_reader] WARN memtester superó {_MEMTESTER_TIMEOUT_S} s. "
             "Prueba considerada incompleta."
         )
         return 0

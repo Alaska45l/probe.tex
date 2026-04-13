@@ -1,4 +1,6 @@
+import argparse
 import json
+import os
 import time
 import platform
 import subprocess
@@ -62,7 +64,54 @@ def _detect_nvme_device() -> str:
     print("[main] WARN no se detectó dispositivo de almacenamiento primario. Usando /dev/nvme0n1.")
     return "/dev/nvme0n1"
 
-def render_pdf():
+def _resolve_outdir(cli_outdir: str | None = None) -> Path:
+    """
+    Determina el directorio de salida para el reporte generado.
+
+    Jerarquía de resolución
+    -----------------------
+    1. Argumento CLI ``--outdir`` (explícito, máxima prioridad).
+    2. Variable de entorno ``INVARIANT_OUT`` (configurable por el sistema
+       de arranque del Live OS, ej. grub kernel cmdline → udev rule → env).
+    3. Fallback garantizado: ``/tmp`` (tmpfs en RAM, siempre escribible,
+       incluso con raíz squashfs de solo lectura).
+
+    Verificación de escritura
+    -------------------------
+    No se confía en que el directorio exista o sea escribible por su sola
+    existencia. Se intenta crear y se ejecuta un test de escritura atómico
+    (touch + unlink). Si falla → degradación a /tmp con aviso.
+
+    Returns
+    -------
+    Path
+        Directorio de salida garantizado como escribible.
+    """
+    candidate: str | None = cli_outdir or os.environ.get("INVARIANT_OUT")
+
+    if candidate:
+        p = Path(candidate)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            probe = p / ".probe_tex_write_test"
+            probe.touch()
+            probe.unlink()
+            print(f"[main] INFO outdir: {p.resolve()}")
+            return p
+        except Exception as exc:
+            print(
+                f"[main] WARN outdir '{candidate}' no escribible ({exc}). "
+                "Degradando a /tmp."
+            )
+
+    print("[main] INFO outdir: /tmp (fallback squashfs-safe)")
+    return Path("/tmp")
+
+def render_pdf(outdir: Path | None = None) -> None:
+    """
+    outdir: directorio de salida para .tex y .pdf.
+            Si None → /tmp (Live OS safe).
+    """
     print("[*] Iniciando extracción de datos estáticos concurrente...")
     start_time = time.time()
 
@@ -218,24 +267,42 @@ def render_pdf():
         "lista_recomendaciones": entropy_data.lista_recomendaciones,
     })
 
-    print("[*] Inyectando variables y escribiendo archivo .tex...")
+    out      = outdir or Path("/tmp")
+    tex_path = out / "reporte_generado.tex"
+
+    print(f"[*] Inyectando variables y escribiendo {tex_path} ...")
     tex_output = template.render(**context)
-    Path('reporte_generado.tex').write_text(tex_output, encoding='utf-8')
+    tex_path.write_text(tex_output, encoding="utf-8")
 
-    print("[*] Compilando PDF...")
+    print("[*] Compilando PDF con tectonic...")
     try:
-        # Tectonic no necesita flags complejos, lo hace todo solo
         subprocess.run(
-            ['tectonic', 'reporte_generado.tex'], 
-            check=True, 
+            ["tectonic", "--outdir", str(out), str(tex_path)],
+            check=True,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.DEVNULL,
         )
-        print("[+] ÉXITO: reporte_generado.pdf creado correctamente.")
+        pdf_path = out / "reporte_generado.pdf"
+        print(f"[+] ÉXITO: {pdf_path}")
     except FileNotFoundError:
-        print("[-] ERROR: No se encontró el comando 'tectonic'. Instálalo con: sudo pacman -S tectonic")
+        print("[-] ERROR: 'tectonic' no encontrado. Instalar: sudo pacman -S tectonic")
     except subprocess.CalledProcessError:
-        print("[-] ERROR: Fallo de compilación. Revisa reporte_generado.tex")
+        print(f"[-] ERROR: Compilación fallida. Revisar {tex_path}")
 
-if __name__ == '__main__':
-    run_tui(render_pdf)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        prog="probe.tex",
+        description="INVARIANT — Hardware Forensic Diagnostic",
+    )
+    parser.add_argument(
+        "--outdir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Directorio de salida para reporte_generado.pdf "
+            "(default: $INVARIANT_OUT o /tmp)"
+        ),
+    )
+    args   = parser.parse_args()
+    outdir = _resolve_outdir(args.outdir)
+    run_tui(lambda: render_pdf(outdir))

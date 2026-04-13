@@ -560,6 +560,66 @@ def _run_vram_stress_test(
 #  CAPA 5 — Prueba Térmica Activa (stress-ng + hilo de muestreo)
 # ════════════════════════════════════════════════════════════════════════════
 
+def _read_temps_nvidia() -> tuple[float, float]:
+    """
+    Lee temperatura edge (GPU die) y hotspot vía nvidia-smi.
+
+    Contexto de uso
+    ---------------
+    El driver propietario NVIDIA (blob) habitualmente NO expone nodos
+    hwmon en /sys/class/hwmon cuando:
+      - IOMMU/VT-d está activo (común en Live OS con UEFI Secure Boot).
+      - La GPU opera en modo offload (Prime Offload / Optimus).
+      - El módulo nouveau está ennegrecido (blacklist) y el blob se cargó
+        tarde en el proceso de arranque del Live OS.
+
+    En esos escenarios, _find_gpu_hwmon() devuelve None y la Capa 5
+    retornaría (0.0, 0.0) sin datos útiles.  Esta función proporciona
+    el fallback usando la interfaz propietaria.
+
+    Mapa de campos nvidia-smi
+    -------------------------
+    temperature.gpu    → T_edge  (junction die)
+    temperature.memory → T_hotspot proxy (VRAM; devuelve "[N/A]" en
+                         GPUs sin sensor de memoria dedicado → se usa
+                         T_edge como proxy conservador).
+
+    Returns
+    -------
+    (t_edge, t_hotspot) en °C, redondeados a 1 decimal.
+    (0.0, 0.0) ante cualquier fallo, incluyendo nvidia-smi no instalado.
+    """
+    try:
+        raw = _run(
+            [
+                "nvidia-smi",
+                "--query-gpu=temperature.gpu,temperature.memory",
+                "--format=csv,noheader,nounits",
+            ],
+            timeout=_NSMI_TIMEOUT,
+        )
+        parts  = [p.strip() for p in raw.strip().split(",")]
+        t_edge = _safe_float(parts[0]) if parts else 0.0
+
+        # temperature.memory puede ser "[N/A]" o "N/A" en tarjetas sin sensor VRAM
+        mem_raw   = parts[1].upper() if len(parts) > 1 else ""
+        t_hotspot = (
+            _safe_float(parts[1])
+            if mem_raw and "N/A" not in mem_raw
+            else t_edge  # proxy conservador: misma temperatura que edge
+        )
+
+        if _TEMP_MIN <= t_edge <= _TEMP_MAX:
+            return round(t_edge, 1), round(t_hotspot, 1)
+
+    except FileNotFoundError:
+        pass  # nvidia-smi ausente: silencioso, no es error de hardware
+    except Exception as exc:
+        print(f"[gpu_reader] WARN _read_temps_nvidia: {exc}")
+
+    return 0.0, 0.0
+
+
 def _active_thermal_test_gpu(
     hwmon: Path,
 ) -> tuple[float, float]:
@@ -887,8 +947,6 @@ def extract_gpu_data() -> GPUData:
                 vram_tested = False
 
         # ── Capa 5: PRUEBA TÉRMICA ACTIVA ─────────────────────────────────
-        # Reemplaza la lectura estática original por un muestreo con carga
-        # real durante _GPU_STRESS_DURATION_S segundos (stress-ng --matrix).
         gpu_t_edge        = 0.0
         gpu_t_hotspot     = 0.0
         gpu_delta_hotspot = 0.0
@@ -899,19 +957,40 @@ def extract_gpu_data() -> GPUData:
             if card is not None:
                 hwmon = _find_gpu_hwmon(card)
                 if hwmon is not None:
-                    # Leer límite de temperatura antes de la prueba de estrés
-                    # (no se modifica bajo carga; es un valor de fábrica).
+                    # Límite de temperatura: dato de fábrica, no cambia bajo carga.
                     temp_limit = _read_temp_limit(hwmon)
-
-                    # Prueba activa: devuelve picos de Edge y Hotspot.
+                    # Prueba activa: picos de Edge y Hotspot bajo stress-ng.
                     gpu_t_edge, gpu_t_hotspot = _active_thermal_test_gpu(hwmon)
-
-                    # Si la prueba retornó 0.0 porque el sensor no existe,
-                    # el resultado es legítimamente "sin datos" → estado "info".
                     gpu_delta_hotspot = round(gpu_t_hotspot - gpu_t_edge, 1)
                     hotspot_status    = _classify_hotspot(
                         gpu_delta_hotspot, gpu_t_edge, gpu_t_hotspot
                     )
+
+            # ── Fallback NVIDIA: driver propietario sin hwmon expuesto ────
+            # Se activa si y solo si la ruta hwmon no produjo datos útiles
+            # y el driver en uso es nvidia (blob).
+            if gpu_t_edge == 0.0 and "nvidia" in driver_name.lower():
+                nv_edge, nv_hotspot = _read_temps_nvidia()
+                if nv_edge > 0.0:
+                    gpu_t_edge        = nv_edge
+                    gpu_t_hotspot     = nv_hotspot
+                    gpu_delta_hotspot = round(gpu_t_hotspot - gpu_t_edge, 1)
+                    hotspot_status    = _classify_hotspot(
+                        gpu_delta_hotspot, gpu_t_edge, gpu_t_hotspot
+                    )
+                    print(
+                        f"[gpu_reader] INFO NVIDIA hwmon ausente; "
+                        f"temps via nvidia-smi: "
+                        f"edge={gpu_t_edge}°C  hotspot={gpu_t_hotspot}°C"
+                    )
+                else:
+                    # nvidia-smi tampoco respondió: estado "info" es correcto,
+                    # no fabricamos datos.
+                    print(
+                        "[gpu_reader] WARN NVIDIA: ni hwmon ni nvidia-smi "
+                        "disponibles. Temperaturas reportadas como UNKNOWN."
+                    )
+
         except Exception as exc:
             print(f"[gpu_reader] WARN prueba térmica activa: {exc}")
 

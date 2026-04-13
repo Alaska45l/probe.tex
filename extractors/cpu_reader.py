@@ -66,13 +66,13 @@ from core.models import CPUData
 # ════════════════════════════════════════════════════════════════════════════
 
 _SENSOR_CHIP_PRIORITY: tuple[str, ...] = (
-    "coretemp",
-    "k10temp",
-    "zenpower",
-    "nct",
-    "it8",
-    "asus",
-    "acpitz",
+    "coretemp",   # Intel: Core i/Xeon — chip expuesto por coretemp.ko
+    "k10temp",    # AMD: Zen 1–5, Threadripper, EPYC
+    "zenpower",   # AMD: alternativa con acceso directo al SMN
+    "nct",        # Nuvoton: SuperIO habitual en placas ASUS/Gigabyte
+    "it8",        # ITE: SuperIO habitual en placas MSI/ASRock
+    "asus",       # ASUS WMI platform sensor
+    "acpitz",     # ACPI thermal zone — último recurso (baja resolución)
 )
 
 _TJMAX_DEFAULT:       int   = 100      # °C conservador
@@ -505,6 +505,25 @@ def _real_throttle_events() -> tuple[int, int]:
     return total, 0
 
 
+def _detect_pstate_driver() -> str:
+    """
+    Detecta el driver de gobernador de frecuencia activo en policy0.
+
+    Valores conocidos: "intel_pstate", "intel_cpufreq", "amd-pstate",
+    "amd-pstate-epp", "acpi-cpufreq", "cppc_cpufreq", "unknown".
+
+    Usado para documentar en log si el driver es no-genérico; no modifica
+    la lógica de muestreo porque scaling_cur_freq está expuesto por todos.
+    """
+    try:
+        p = Path("/sys/devices/system/cpu/cpufreq/policy0/scaling_driver")
+        if p.exists():
+            return p.read_text().strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
 def _build_pstates(max_mhz: int, min_mhz: int) -> dict:
     if max_mhz < 800:
         max_mhz = 3000
@@ -512,6 +531,8 @@ def _build_pstates(max_mhz: int, min_mhz: int) -> dict:
         min_mhz = 800
     mid_mhz = int(max_mhz * 0.65)
 
+    # ── Leer límites reales desde cpufreq sysfs ───────────────────────────
+    # Funciona con intel_pstate, amd-pstate y acpi-cpufreq sin distinción.
     try:
         pol0    = Path("/sys/devices/system/cpu/cpufreq/policy0")
         max_sys = _safe_int(_read_sysfs(pol0 / "scaling_max_freq")) // 1000
@@ -521,24 +542,29 @@ def _build_pstates(max_mhz: int, min_mhz: int) -> dict:
         if min_sys > 0:
             min_mhz = min_sys
         mid_mhz = int(max_mhz * 0.65)
+
+        driver = _detect_pstate_driver()
+        if driver not in ("acpi-cpufreq", "unknown"):
+            print(f"[cpu_reader] INFO P-state driver: {driver} "
+                  "(scaling_cur_freq disponible para muestreo sostenido)")
     except Exception:
         pass
 
+    # ── Función interna de desviación porcentual ──────────────────────────
     def _dev(base: int, sust: int) -> float:
         return round(abs(base - sust) / base * 100.0, 1) if base else 0.0
 
-        # Para sust_p0: medir durante el stress activo que ya está corriendo en Capa 5
-        # El stress-ng ya está ejecutándose cuando se llama a _build_pstates
-        sust_p0 = _sample_sustained_freq_mhz(duration_s=4) or int(max_mhz * 0.96)
-        # Anotar en el campo si fue medido o estimado
-        sust_p0_real = sust_p0 != int(max_mhz * 0.96)
+    # ── FIX: estas tres líneas estaban dentro de _dev() tras su `return` ──
+    # Era dead code → NameError al construir el dict de retorno.
+    base_p0      = max_mhz
+    sust_p0      = _sample_sustained_freq_mhz(duration_s=4) or int(max_mhz * 0.96)
+    sust_p0_real = (sust_p0 != int(max_mhz * 0.96))
 
-        base_p0 = max_mhz
     base_p1, sust_p1 = mid_mhz, int(mid_mhz * 0.97)
     base_p2, sust_p2 = min_mhz, int(min_mhz * 0.99)
 
     return {
-            "measured": sust_p0_real,
+        "measured":  sust_p0_real,
         "base_p0": base_p0, "sust_p0": sust_p0, "dev_p0": _dev(base_p0, sust_p0),
         "base_p1": base_p1, "sust_p1": sust_p1, "dev_p1": _dev(base_p1, sust_p1),
         "base_p2": base_p2, "sust_p2": sust_p2, "dev_p2": _dev(base_p2, sust_p2),
