@@ -1,43 +1,34 @@
 """
 extractors/disk_reader.py
 =========================
-Extractor de hardware para el subsistema de almacenamiento NVMe/SSD
-de probe.tex.
+Extractor de hardware para el subsistema de almacenamiento de probe.tex.
 
-Fuente de datos principal — Desgaste
--------------------------------------
-``sudo smartctl -a -j <device>``   (smartmontools ≥ 7.3)
+CHANGELOG v1.1
+--------------
+* Importa StorageData en lugar de NVMeData.
+* Detección de rotación promovida a Capa 1 (antes era Capa 6.5 tardía).
+* Añadida Capa HDD-A: extracción de atributos mecánicos SMART
+    (ID 3 Spin-Up Time, ID 5 Reallocated Sector Count, ID 188 Command Timeout).
+* Añadida Capa HDD-B: medición de seek latency con fio randread 4K QD1.
+  Usa clat_ns.mean del JSON de fio y lo convierte a ms.
+* extract_disk_data() bifurca en HDD-path y SSD-path antes de lanzar
+  cualquier test de estado sólido.
+* Devuelve StorageData (NVMeData es alias en models.py).
 
-Fuente de datos — Latencia I/O Real (Forense Activo)
------------------------------------------------------
-``sudo fio --name=auditmaster_lat --filename=<device>``
-    ``--rw=randread --bs=4k --ioengine=libaio --iodepth=1``
-    ``--direct=1 --runtime=15s --time_based --output-format=json+``
+Fuentes de datos SSD/NVMe (sin cambios respecto a v1.0)
+--------------------------------------------------------
+smartctl -a -j <device>
+fio randread 4k QD1 runtime=15s (solo SSD)
 
-El JSON extendido (``json+``) de fio incluye:
-  jobs[0].read.clat_ns.percentiles  → p50, p95, p99, p99.9 en nanosegundos.
-  jobs[0].read.clat_ns.bins         → conteos por bucket de latencia (ns).
-
-Los percentiles se convierten a microsegundos.  Los bins se mapean a los
-diez buckets propios del modelo (lat_b0–lat_b9):
-
-  b0  < 1 µs      [ 0,     1 000) ns
-  b1  1–2 µs      [ 1 000, 2 000) ns
-  b2  2–4 µs      [ 2 000, 4 000) ns
-  b3  4–8 µs      [ 4 000, 8 000) ns
-  b4  8–16 µs     [ 8 000,16 000) ns
-  b5  16–32 µs    [16 000,32 000) ns
-  b6  32–64 µs    [32 000,64 000) ns
-  b7  64–128 µs   [64 000,128 000) ns
-  b8  128–256 µs  [128 000,256 000) ns
-  b9  > 256 µs    [256 000, ∞) ns
+Fuentes de datos HDD mecánico (nuevo v1.1)
+------------------------------------------
+smartctl -A -j <device>         → atributos mecánicos SMART
+fio randread 4k QD1 runtime=10s → seek latency media (clat_ns.mean)
 
 Degradación elegante
 --------------------
-Si ``fio`` no está instalado (FileNotFoundError) o el test falla, todos
-los lat_* y percentiles quedan en 0 y se registra un aviso.  El desgaste
-SMART se publica igual.  El guard exterior garantiza NVMeData() vacío
-ante cualquier fallo imprevisto.
+Cada capa encapsula su lógica en try/except.
+Guard exterior garantiza StorageData() vacío ante cualquier fallo.
 
 stdlib únicamente: subprocess, json, pathlib.
 """
@@ -47,9 +38,9 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Optional
 
-from core.models import NVMeData
+from core.models import StorageData
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -65,25 +56,31 @@ _SPARE_THRESHOLD:   int   = 10
 _BAD_BLK_THRESHOLD: int   = 50
 _ECC_THRESHOLD:     int   = 100
 _WAF_THRESHOLD:     float = 3.0
-_WAF_SATA_NAND_WRITES_ID: Final[int] = 233   # Samsung 840+, muchos Toshiba/Kioxia
-_WAF_SATA_HOST_WRITES_ID: Final[int] = 241   # JEDEC EPD standard fallback
+_WAF_SATA_NAND_WRITES_ID: Final[int] = 233
+_WAF_SATA_HOST_WRITES_ID: Final[int] = 241
 
-_FIO_RUNTIME_S: int = 15     # duración del test fio en segundos
+# Duraciones de test fio
+_FIO_RUNTIME_SSD_S: int = 15   # SSD: histograma de latencia completo
+_FIO_RUNTIME_HDD_S: int = 10   # HDD: seek latency media (no necesita más)
 
-# Rangos de nuestros buckets expresados en nanosegundos.
-# Índice i → [low_ns, high_ns)  donde high del último es +∞.
+# Rangos de nuestros buckets expresados en nanosegundos (solo SSD)
 _FIO_BUCKET_RANGES_NS: tuple[tuple[int, float], ...] = (
-    (0,           1_000),      # b0  < 1 µs
-    (1_000,       2_000),      # b1  1–2 µs
-    (2_000,       4_000),      # b2  2–4 µs
-    (4_000,       8_000),      # b3  4–8 µs
-    (8_000,      16_000),      # b4  8–16 µs
-    (16_000,     32_000),      # b5  16–32 µs
-    (32_000,     64_000),      # b6  32–64 µs
-    (64_000,    128_000),      # b7  64–128 µs
-    (128_000,   256_000),      # b8  128–256 µs
-    (256_000,   float("inf")), # b9  > 256 µs
+    (0,           1_000),
+    (1_000,       2_000),
+    (2_000,       4_000),
+    (4_000,       8_000),
+    (8_000,      16_000),
+    (16_000,     32_000),
+    (32_000,     64_000),
+    (64_000,    128_000),
+    (128_000,   256_000),
+    (256_000,   float("inf")),
 )
+
+# IDs de atributos SMART mecánicos HDD
+_SMART_ID_SPIN_UP_TIME:         Final[int] = 3
+_SMART_ID_REALLOCATED_SECTORS:  Final[int] = 5
+_SMART_ID_COMMAND_TIMEOUT:      Final[int] = 188
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -91,12 +88,6 @@ _FIO_BUCKET_RANGES_NS: tuple[tuple[int, float], ...] = (
 # ════════════════════════════════════════════════════════════════════════════
 
 def _run_smartctl(device: str, timeout: int = 5) -> dict[str, Any]:
-    """
-    Ejecuta ``sudo smartctl -a -j <device>`` y devuelve el JSON parseado.
-
-    Solo los bits 0 y 1 del returncode indican JSON irrecuperable;
-    los bits 2-7 reportan estado del disco pero el JSON es válido.
-    """
     result = subprocess.run(
         ["sudo", "smartctl", "-a", "-j", device],
         capture_output=True, text=True, timeout=timeout,
@@ -127,7 +118,41 @@ def _uw_to_tb(units: int) -> float:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  CAPA 2 — IDENTIDAD DEL DISPOSITIVO
+#  CAPA 1 — DETECCIÓN DE TIPO DE DISCO (promovida desde Capa 6.5)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _detect_rotational(device_path: str) -> bool:
+    """
+    Determina si el dispositivo es un disco mecánico.
+
+    Estrategia 1 (canónica): sysfs /sys/block/<dev>/queue/rotational
+      Valor "1" → HDD. Valor "0" → SSD/NVMe.
+
+    Estrategia 2 (heurística de nombre): prefijos sd* sin información sysfs
+      suelen ser SATA (potencialmente mecánico); nvme* son siempre SSD.
+
+    Honestidad forense: si ninguna estrategia concluye, devolvemos False
+    (asumir SSD). Preferiríamos omitir un test HDD que ejecutar un test
+    NVMe destructivo sobre un disco mecánico lento.
+    """
+    try:
+        dev_name = Path(device_path).name
+        rot_path = Path(f"/sys/block/{dev_name}/queue/rotational")
+        if rot_path.exists():
+            return rot_path.read_text().strip() == "1"
+    except Exception:
+        pass
+
+    # Heurística de nombre: /dev/sd* sin sysfs → probable HDD
+    dev_name = Path(device_path).name
+    if dev_name.startswith("sd") and not device_path.startswith("/dev/nvme"):
+        return True
+
+    return False
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  CAPA 2 — IDENTIDAD DEL DISPOSITIVO (compartida SSD/HDD)
 # ════════════════════════════════════════════════════════════════════════════
 
 def _parse_identity(smart: dict, device: str) -> tuple[str, str, int, int, str]:
@@ -143,12 +168,235 @@ def _parse_identity(smart: dict, device: str) -> tuple[str, str, int, int, str]:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  CAPA 3 — nvme_smart_health_information_log
+#  CAPA HDD-A — ATRIBUTOS SMART MECÁNICOS
+# ════════════════════════════════════════════════════════════════════════════
+
+def _parse_hdd_smart_attributes(
+    smart: dict,
+) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    """
+    Extrae los tres atributos SMART relevantes para la cinemática mecánica.
+
+    ID 3  — Spin-Up Time (ms):
+        Tiempo que tarda el motor en alcanzar la velocidad nominal
+        desde el reposo. Degradación típica: valores crecientes en
+        el tiempo indican desgaste de los cojinetes del husillo.
+        Se lee el campo ``raw.value`` directamente.
+
+    ID 5  — Reallocated Sector Count:
+        Sectores con errores irrecuperables que el firmware reasignó
+        a la zona de reserva. Cualquier valor >0 implica daño físico
+        confirmado en la superficie magnética del plato.
+
+    ID 188 — Command Timeout:
+        Número de comandos ATA que expiraron sin respuesta.
+        Indicador de fallos del actuador, brazo de cabezal o interface
+        SATA deteriorada.
+
+    Returns
+    -------
+    (spin_up_ms, reallocated_sectors, command_timeouts)
+        Cada campo es None si el atributo no está presente en la tabla
+        SMART del disco (firmware propietario o disco IDE muy antiguo).
+    """
+    spin_up:      Optional[int] = None
+    reallocated:  Optional[int] = None
+    cmd_timeout:  Optional[int] = None
+
+    for attr in _get(smart, "ata_smart_attributes", "table", default=[]):
+        aid     = attr.get("id", -1)
+        raw_val = attr.get("raw", {}).get("value", None)
+        if not isinstance(raw_val, int):
+            # Algunos firmwares reportan el raw como string "X (Y Y Y Y Y Y)"
+            # Intentamos extraer el primer entero.
+            raw_str = str(attr.get("raw", {}).get("string", "")).split()[0]
+            try:
+                raw_val = int(raw_str)
+            except (ValueError, TypeError):
+                continue
+
+        if aid == _SMART_ID_SPIN_UP_TIME:
+            spin_up = raw_val
+        elif aid == _SMART_ID_REALLOCATED_SECTORS:
+            reallocated = raw_val
+        elif aid == _SMART_ID_COMMAND_TIMEOUT:
+            cmd_timeout = raw_val
+
+    return spin_up, reallocated, cmd_timeout
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  CAPA HDD-B — SEEK LATENCY VÍA fio
+# ════════════════════════════════════════════════════════════════════════════
+
+def _run_fio_seek_latency_hdd(device: str) -> Optional[float]:
+    """
+    Mide la latencia media de búsqueda aleatoria del HDD usando fio.
+
+    Diseño del test
+    ---------------
+    ``fio --rw=randread --bs=4k --iodepth=1 --direct=1``
+    ``    --time_based --runtime=10s --output-format=json``
+
+    * randread 4K QD1: fuerza al cabezal a moverse a una nueva posición
+      aleatoria en cada operación (seek real), sin cola de profundidad
+      que enmascare la latencia mecánica.
+    * direct=1: bypass del page cache para medir el hardware real.
+    * runtime=10s: suficiente para promediar 200-400 seeks con un HDD
+      de 5400-7200 RPM típico, sin desgaste adicional relevante.
+    * output-format=json (no json+): sin histograma de bins; solo
+      necesitamos clat_ns.mean.
+
+    Conversión
+    ----------
+    clat_ns.mean (nanosegundos) → ms: dividir entre 1_000_000.
+
+    Latencias de referencia orientativas
+    -------------------------------------
+    HDD 5400 RPM:  ~12–18 ms (laptop económico)
+    HDD 7200 RPM:  ~8–12 ms  (desktop o servidor)
+    HDD 10000 RPM: ~4–6 ms   (SCSI/SAS antiguo)
+    Umbral degradación (entropy.py): >25 ms → ΔA += 20
+
+    Degradación elegante
+    --------------------
+    FileNotFoundError → fio no instalado: retorna None.
+    Timeout o estructura inesperada: retorna None.
+
+    Returns
+    -------
+    Optional[float]
+        Latencia media de seek en milisegundos, redondeada a 2 decimales.
+        None si la medición no pudo completarse.
+    """
+    cmd = [
+        "sudo", "fio",
+        "--name=probe_tex_hdd_seek",
+        f"--filename={device}",
+        "--rw=randread",
+        "--bs=4k",
+        "--ioengine=libaio",
+        "--iodepth=1",
+        "--direct=1",
+        f"--runtime={_FIO_RUNTIME_HDD_S}s",
+        "--time_based",
+        "--output-format=json",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_FIO_RUNTIME_HDD_S + 20,
+        )
+        if not result.stdout.strip():
+            raise RuntimeError(
+                f"fio HDD sin salida (rc={result.returncode}). "
+                f"stderr: {result.stderr[:200]!r}"
+            )
+        data = json.loads(result.stdout)
+        clat_ns_mean: float = data["jobs"][0]["read"]["clat_ns"]["mean"]
+        seek_ms = round(clat_ns_mean / 1_000_000.0, 2)
+        return seek_ms
+
+    except FileNotFoundError:
+        print("[disk_reader] WARN fio no instalado. Seek latency HDD no disponible.")
+        return None
+    except (KeyError, IndexError) as exc:
+        print(f"[disk_reader] WARN fio HDD: estructura JSON inesperada: {exc}")
+        return None
+    except subprocess.TimeoutExpired:
+        print(f"[disk_reader] WARN fio HDD superó timeout de {_FIO_RUNTIME_HDD_S + 20} s.")
+        return None
+    except Exception as exc:
+        print(f"[disk_reader] WARN fio HDD seek: {exc}")
+        return None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  RUTA HDD — ENSAMBLAJE COMPLETO
+# ════════════════════════════════════════════════════════════════════════════
+
+def _extract_hdd_data(device_path: str, smart: dict) -> StorageData:
+    """
+    Ensambla StorageData para un disco mecánico.
+
+    Capas ejecutadas
+    ----------------
+    Capa 2     Identidad (modelo, firmware, capacidad, horas) — compartida.
+    Capa HDD-A Atributos SMART mecánicos (ID 3, 5, 188).
+    Capa HDD-B fio seek latency (clat_ns.mean → ms).
+
+    Los campos nvme_* de estado sólido se dejan en sus valores por defecto
+    (cero / False) para garantizar que el template Jinja2 no renderice
+    datos espurios si accidentalmente entra al bloque SSD.
+
+    Returns
+    -------
+    StorageData
+        Con is_hdd=True y campos hdd_* populados según disponibilidad.
+    """
+    # ── Identidad ─────────────────────────────────────────────────────────
+    nvme_device = device_path
+    nvme_model  = "N/A"
+    nvme_capacity = nvme_hours = 0
+    nvme_firmware = "N/A"
+    try:
+        nvme_device, nvme_model, nvme_capacity, nvme_hours, nvme_firmware = (
+            _parse_identity(smart, device_path)
+        )
+    except Exception as exc:
+        print(f"[disk_reader] WARN HDD identidad: {exc}")
+
+    # Horas de encendido (SMART ATA, campo diferente al NVMe)
+    if nvme_hours == 0:
+        try:
+            nvme_hours = int(
+                _get(smart, "power_on_time", "hours", default=0)
+                or _get(smart, "ata_smart_attributes", default={})
+            )
+        except Exception:
+            pass
+
+    # ── SMART mecánico ─────────────────────────────────────────────────────
+    spin_up:     Optional[int] = None
+    reallocated: Optional[int] = None
+    cmd_timeout: Optional[int] = None
+    try:
+        spin_up, reallocated, cmd_timeout = _parse_hdd_smart_attributes(smart)
+    except Exception as exc:
+        print(f"[disk_reader] WARN HDD SMART mecánico: {exc}")
+
+    # ── fio Seek Latency ─────────────────────────────────────────────────
+    seek_ms: Optional[float] = None
+    try:
+        print(f"[disk_reader] INFO HDD detectado en {device_path}. "
+              "Ejecutando test de seek latency (fio 10s)...")
+        seek_ms = _run_fio_seek_latency_hdd(device_path)
+    except Exception as exc:
+        print(f"[disk_reader] WARN HDD fio seek: {exc}")
+
+    return StorageData(
+        is_hdd            = True,
+        nvme_device       = nvme_device,
+        nvme_model        = nvme_model,
+        nvme_capacity     = nvme_capacity,
+        nvme_firmware     = nvme_firmware,
+        nvme_hours        = nvme_hours,
+        # Campos mecánicos
+        hdd_spin_up_time         = spin_up,
+        hdd_seek_latency_ms      = seek_ms,
+        hdd_reallocated_sectors  = reallocated,
+        hdd_command_timeouts     = cmd_timeout,
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  RUTA SSD/NVMe — CAPAS ORIGINALES (sin cambios respecto a v1.0)
 # ════════════════════════════════════════════════════════════════════════════
 
 def _parse_health_log(smart: dict) -> dict[str, Any]:
     log = _get(smart, "nvme_smart_health_information_log", default={})
-
     temp_current = float(
         _get(smart, "temperature", "current", default=0)
         or _get(log, "temperature", default=0)
@@ -162,7 +410,6 @@ def _parse_health_log(smart: dict) -> dict[str, Any]:
                 if isinstance(v, (int, float)):
                     t_max_log = max(t_max_log, float(v))
     t_max = max(temp_current, t_max_log) if t_max_log else temp_current
-
     return {
         "percentage_used":    int(_get(log, "percentage_used",    default=0)),
         "available_spare":    int(_get(log, "available_spare",    default=100)),
@@ -174,16 +421,11 @@ def _parse_health_log(smart: dict) -> dict[str, Any]:
     }
 
 
-# ════════════════════════════════════════════════════════════════════════════
-#  CAPA 4 — TBW, WAF Y ESCRITURAS NAND
-# ════════════════════════════════════════════════════════════════════════════
-
-def _calc_tbw(data_units_written: int, percentage_used: int,
-              capacity_gb: int) -> tuple[float, float, float]:
-    """
-    Retorna (lba_written_tb, rated_tbw, remaining_tbw).
-    WAF y nand_written NO se calculan aquí — requieren atributos vendedor.
-    """
+def _calc_tbw(
+    data_units_written: int,
+    percentage_used:    int,
+    capacity_gb:        int,
+) -> tuple[float, float, float]:
     lba_written_tb = _uw_to_tb(data_units_written)
     if percentage_used > 0:
         rated_tbw = round(lba_written_tb / (percentage_used / 100.0), 1)
@@ -192,35 +434,22 @@ def _calc_tbw(data_units_written: int, percentage_used: int,
     remaining_tbw = round(max(0.0, rated_tbw - lba_written_tb), 1)
     return lba_written_tb, rated_tbw, remaining_tbw
 
+
 def _extract_real_waf(smart: dict, lba_written_tb: float) -> tuple[float, float]:
-    """
-    Intenta extraer WAF real desde atributos SMART vendedor-específicos.
-    Retorna (waf, nand_written_tb). Retorna (0.0, 0.0) si no disponible.
-    Honestidad forense: cero fabricación.
-    """
-    # Intento 1: atributos SATA ID 233 (NAND escrito) y 241 (host escrito)
     nand_raw = host_raw = 0
     for attr in _get(smart, "ata_smart_attributes", "table", default=[]):
         aid     = attr.get("id", 0)
         raw_val = attr.get("raw", {}).get("value", 0)
-        if aid == _WAF_SATA_NAND_WRITES_ID and isinstance(raw_val, int):
+        if aid == 233 and isinstance(raw_val, int):
             nand_raw = raw_val
-        elif aid == _WAF_SATA_HOST_WRITES_ID and isinstance(raw_val, int):
+        elif aid == 241 and isinstance(raw_val, int):
             host_raw = raw_val
-
-    if nand_raw > 0 and host_raw > 0 and host_raw >= 1:
-        waf           = round(nand_raw / host_raw, 3)
-        nand_tb       = _uw_to_tb(nand_raw * 32)   # unidad: 32 MB por unidad típica
+    if nand_raw > 0 and host_raw > 0:
+        waf    = round(nand_raw / host_raw, 3)
+        nand_tb = _uw_to_tb(nand_raw * 32)
         return waf, nand_tb
-
-    # Intento 2: NVMe vendor log (no estándar — imposible sin nvme-cli específico)
-    # No hay atributo universal → honestidad: sin dato.
     return 0.0, 0.0
 
-
-# ════════════════════════════════════════════════════════════════════════════
-#  CAPA 5 — BLOQUES DEFECTUOSOS Y ECC
-# ════════════════════════════════════════════════════════════════════════════
 
 def _parse_bad_blocks_and_ecc(smart: dict, health: dict) -> tuple[int, int]:
     ecc_errors: int = health.get("media_errors", 0)
@@ -228,30 +457,24 @@ def _parse_bad_blocks_and_ecc(smart: dict, health: dict) -> tuple[int, int]:
         for attr in _get(smart, "ata_smart_attributes", "table", default=[]):
             aid     = attr.get("id", 0)
             raw_val = attr.get("raw", {}).get("value", 0)
-            if aid == 187 and isinstance(raw_val, int):   # Reported Uncorrectable
+            if aid == 187 and isinstance(raw_val, int):
                 ecc_errors = max(ecc_errors, raw_val)
-            if aid == 196 and isinstance(raw_val, int):   # Reallocation Event Count
+            if aid == 196 and isinstance(raw_val, int):
                 ecc_errors += raw_val
     except Exception:
         pass
-
     bad_blocks: int = 0
     try:
         for attr in _get(smart, "ata_smart_attributes", "table", default=[]):
-            if attr.get("id") == 5:   # Reallocated Sector Count — ÚNICO origen válido
+            if attr.get("id") == 5:
                 raw_val = attr.get("raw", {}).get("value", 0)
                 if isinstance(raw_val, int):
                     bad_blocks = raw_val
                     break
     except Exception:
         pass
-
     return bad_blocks, ecc_errors
 
-
-# ════════════════════════════════════════════════════════════════════════════
-#  CAPA 6 — UMBRALES BOOLEANOS
-# ════════════════════════════════════════════════════════════════════════════
 
 def _compute_flags(
     t_max: float, life_pct: int, waf: float,
@@ -267,23 +490,11 @@ def _compute_flags(
     }
 
 
-# ════════════════════════════════════════════════════════════════════════════
-#  CAPA 7 — LATENCIA I/O REAL (fio randread 4 K QD1)
-# ════════════════════════════════════════════════════════════════════════════
-
 def _fio_percentile(percentiles: dict, target: float) -> float:
-    """
-    Extrae el valor de un percentil del dict ``clat_ns.percentiles`` de fio.
-
-    fio formatea las claves con seis decimales ("50.000000"), pero distintas
-    versiones pueden variar.  Intentamos varios formatos antes de hacer
-    una búsqueda aproximada por diferencia mínima.
-    """
     for fmt in (f"{target:.6f}", f"{target:.1f}", f"{target:.0f}", str(target)):
         val = percentiles.get(fmt)
         if val is not None:
             return float(val)
-    # Búsqueda aproximada (tolerancia 0.1 pp).
     best: float | None = None
     best_diff = float("inf")
     for k, v in percentiles.items():
@@ -298,13 +509,6 @@ def _fio_percentile(percentiles: dict, target: float) -> float:
 
 
 def _map_bins_to_buckets(bins: dict) -> list[int]:
-    """
-    Mapea los bins de latencia de fio (claves = ns, valores = conteo)
-    a los diez buckets propios del modelo (lat_b0–lat_b9).
-
-    fio usa buckets de potencias de 2 con claves numéricas (como strings)
-    que representan el límite inferior del bucket en nanosegundos.
-    """
     buckets = [0] * 10
     for ns_str, count in bins.items():
         try:
@@ -319,66 +523,33 @@ def _map_bins_to_buckets(bins: dict) -> list[int]:
     return buckets
 
 
-def _run_fio_latency(device: str) -> tuple[list[int], float, float, float, float]:
-    """
-    Ejecuta fio randread 4 K QD1 con salida ``json+`` y retorna métricas
-    de latencia reales.
-
-    Comando ejecutado
-    -----------------
-    ``sudo fio --name=auditmaster_lat --filename=<device>``
-        ``--rw=randread --bs=4k --ioengine=libaio --iodepth=1``
-        ``--direct=1 --runtime=<N>s --time_based --output-format=json+``
-
-    ``randread`` garantiza que no se escriben datos en el dispositivo.
-    ``iodepth=1`` mide latencia de cola 1 (sin concurrencia), el escenario
-    más representativo del acceso secuencial de un solo proceso.
-    ``json+`` incluye el campo ``clat_ns.bins`` con el histograma completo.
-
-    Degradación elegante
-    --------------------
-    * FileNotFoundError → fio no instalado: se propaga al caller que
-      devuelve ceros.
-    * returncode != 0   → RuntimeError con el stderr truncado.
-
-    Returns
-    -------
-    (buckets[10], p50_us, p95_us, p99_us, p999_us)
-        Todos los percentiles en microsegundos (float).
-    """
+def _run_fio_latency_ssd(device: str) -> tuple[list[int], float, float, float, float]:
+    """fio randread 4K QD1 json+ para histograma completo (solo SSD/NVMe)."""
     cmd = [
         "sudo", "fio",
-        "--name=auditmaster_lat",
+        "--name=probe_tex_ssd_lat",
         f"--filename={device}",
         "--rw=randread",
         "--bs=4k",
         "--ioengine=libaio",
         "--iodepth=1",
         "--direct=1",
-        f"--runtime={_FIO_RUNTIME_S}s",
+        f"--runtime={_FIO_RUNTIME_SSD_S}s",
         "--time_based",
         "--output-format=json+",
     ]
-
     result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=_FIO_RUNTIME_S + 30,
+        cmd, capture_output=True, text=True, timeout=_FIO_RUNTIME_SSD_S + 30,
     )
-    # fio puede devolver rc != 0 por errores de I/O no fatales; aun así
-    # suele generar JSON válido.  Solo abortamos si no hay salida.
     if not result.stdout.strip():
         raise RuntimeError(
-            f"fio no produjo salida (rc={result.returncode}). "
+            f"fio sin salida (rc={result.returncode}). "
             f"stderr: {result.stderr[:200]!r}"
         )
-
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"JSON de fio inválido: {exc}") from exc
-
     try:
         job_read = data["jobs"][0]["read"]
     except (KeyError, IndexError) as exc:
@@ -388,39 +559,143 @@ def _run_fio_latency(device: str) -> tuple[list[int], float, float, float, float
     pcts = clat.get("percentiles", {})
     bins = clat.get("bins", {})
 
-    # Percentiles: ns → µs
-    p50  = round(_fio_percentile(pcts, 50.0)  / 1_000.0, 2)
-    p95  = round(_fio_percentile(pcts, 95.0)  / 1_000.0, 2)
-    p99  = round(_fio_percentile(pcts, 99.0)  / 1_000.0, 2)
-    p999 = round(_fio_percentile(pcts, 99.9)  / 1_000.0, 2)
+    p50  = round(_fio_percentile(pcts, 50.0) / 1_000.0, 2)
+    p95  = round(_fio_percentile(pcts, 95.0) / 1_000.0, 2)
+    p99  = round(_fio_percentile(pcts, 99.0) / 1_000.0, 2)
+    p999 = round(_fio_percentile(pcts, 99.9) / 1_000.0, 2)
 
     buckets = _map_bins_to_buckets(bins)
     return buckets, p50, p95, p99, p999
+
+
+def _extract_ssd_data(device_path: str, smart: dict) -> StorageData:
+    """
+    Ensambla StorageData para un disco SSD/NVMe.
+    Ruta original completa, sin modificaciones respecto a v1.0.
+    """
+    # ── Identidad ─────────────────────────────────────────────────────────
+    nvme_device = device_path
+    nvme_model  = "N/A"
+    nvme_capacity = nvme_hours = 0
+    nvme_firmware = "N/A"
+    try:
+        nvme_device, nvme_model, nvme_capacity, nvme_hours, nvme_firmware = (
+            _parse_identity(smart, device_path)
+        )
+    except Exception as exc:
+        print(f"[disk_reader] WARN SSD identidad: {exc}")
+
+    # ── SMART health log ───────────────────────────────────────────────────
+    health: dict[str, Any] = {}
+    try:
+        health = _parse_health_log(smart)
+    except Exception as exc:
+        print(f"[disk_reader] WARN SSD health log: {exc}")
+
+    percentage_used    = health.get("percentage_used",    0)
+    available_spare    = health.get("available_spare",  100)
+    media_errors       = health.get("media_errors",       0)
+    data_units_written = health.get("data_units_written", 0)
+    t_max              = health.get("t_max",            45.0)
+    life_pct = max(0, min(100, 100 - percentage_used))
+
+    # ── TBW y WAF ────────────────────────────────────────────────────────
+    lba_written_tb = rated_tbw = remaining_tbw = 0.0
+    waf = nand_written_tb = 0.0
+    try:
+        lba_written_tb, rated_tbw, remaining_tbw = _calc_tbw(
+            data_units_written, percentage_used, nvme_capacity
+        )
+        waf, nand_written_tb = _extract_real_waf(smart, lba_written_tb)
+    except Exception as exc:
+        print(f"[disk_reader] WARN SSD TBW/WAF: {exc}")
+
+    # ── Bloques y ECC ────────────────────────────────────────────────────
+    bad_blocks = 0
+    ecc_errors = media_errors
+    try:
+        bad_blocks, ecc_errors = _parse_bad_blocks_and_ecc(smart, health)
+    except Exception as exc:
+        print(f"[disk_reader] WARN SSD bad_blocks/ECC: {exc}")
+
+    # ── Flags booleanos ───────────────────────────────────────────────────
+    flags: dict[str, bool] = {}
+    try:
+        flags = _compute_flags(t_max, life_pct, waf,
+                               bad_blocks, available_spare, ecc_errors)
+    except Exception as exc:
+        print(f"[disk_reader] WARN SSD flags: {exc}")
+
+    # ── fio histograma de latencia ────────────────────────────────────────
+    buckets: list[int] = [0] * 10
+    p50 = p95 = p99 = p999 = 0.0
+    try:
+        buckets, p50, p95, p99, p999 = _run_fio_latency_ssd(device_path)
+    except FileNotFoundError:
+        print("[disk_reader] WARN fio no instalado. Latencia SSD no disponible.")
+    except Exception as exc:
+        print(f"[disk_reader] WARN fio SSD: {exc}")
+
+    return StorageData(
+        is_hdd         = False,
+        nvme_device    = nvme_device,
+        nvme_model     = nvme_model,
+        nvme_capacity  = nvme_capacity,
+        nvme_firmware  = nvme_firmware,
+        nvme_hours     = nvme_hours,
+
+        nvme_tbw_remaining = remaining_tbw,
+        nvme_tbw_rated     = rated_tbw,
+        nvme_lba_written   = lba_written_tb,
+        nvme_nand_written  = nand_written_tb,
+
+        nvme_waf            = round(waf, 3),
+        nvme_waf_ok         = flags.get("nvme_waf_ok",         False),
+        nvme_bad_blocks     = bad_blocks,
+        nvme_bad_blocks_ok  = flags.get("nvme_bad_blocks_ok",  False),
+        nvme_spare_blocks   = available_spare,
+        nvme_spare_ok       = flags.get("nvme_spare_ok",       False),
+        nvme_ecc_errors     = ecc_errors,
+        nvme_ecc_ok         = flags.get("nvme_ecc_ok",         False),
+        nvme_t_max          = round(t_max, 1),
+        nvme_temp_ok        = flags.get("nvme_temp_ok",        False),
+        nvme_life_pct       = life_pct,
+        nvme_life_ok        = flags.get("nvme_life_ok",        False),
+
+        lat_b0 = buckets[0],  lat_b1 = buckets[1],  lat_b2 = buckets[2],
+        lat_b3 = buckets[3],  lat_b4 = buckets[4],  lat_b5 = buckets[5],
+        lat_b6 = buckets[6],  lat_b7 = buckets[7],  lat_b8 = buckets[8],
+        lat_b9 = buckets[9],
+
+        nvme_lat_p50  = p50,
+        nvme_lat_p95  = p95,
+        nvme_lat_p99  = p99,
+        nvme_lat_p999 = p999,
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
 #  API PÚBLICA
 # ════════════════════════════════════════════════════════════════════════════
 
-def extract_disk_data(device_path: str = "/dev/nvme0n1") -> NVMeData:
+def extract_disk_data(device_path: str = "/dev/nvme0n1") -> StorageData:
     """
-    Extrae y ensambla todos los datos de almacenamiento NVMe en ``NVMeData``.
+    Extrae datos de almacenamiento bifurcando en HDD o SSD/NVMe.
 
-    Arquitectura de extracción en 7 capas
-    --------------------------------------
-    Capa 1  smartctl   — ejecución y obtención del JSON SMART completo.
-    Capa 2  Identidad  — modelo, firmware, capacidad, horas.
-    Capa 3  Health log — percentage_used, spare, media_errors, temperatura.
-    Capa 4  TBW / WAF  — escrituras host y NAND, vida estimada.
-    Capa 5  Bad blocks / ECC — conteos desde atributos SMART/EDAC.
-    Capa 6  Flags      — evaluación de umbrales booleanos.
-    Capa 7  fio        — latencia I/O real (randread 4K QD1, 15 s).
-                         Si fio no está instalado, lat_b* y percentiles = 0.
+    Flujo principal
+    ---------------
+    1. smartctl -a -j <device> → obtiene JSON SMART completo.
+    2. _detect_rotational()     → determina el tipo de disco.
+    3a. Si is_hdd=True  → _extract_hdd_data()  (cinemática mecánica).
+    3b. Si is_hdd=False → _extract_ssd_data()  (estado sólido, sin cambios).
+
+    La detección ocurre ANTES de cualquier test de latencia, garantizando
+    que fio nunca ejecuta el test de histograma NVMe sobre un HDD lento.
 
     Returns
     -------
-    NVMeData
-        Instancia completamente poblada.  Nunca lanza excepciones.
+    StorageData
+        Nunca lanza excepciones.
     """
     try:
         # ── Capa 1: smartctl ─────────────────────────────────────────────
@@ -428,133 +703,20 @@ def extract_disk_data(device_path: str = "/dev/nvme0n1") -> NVMeData:
             smart = _run_smartctl(device_path, timeout=5)
         except Exception as exc:
             print(f"[disk_reader] WARN smartctl: {exc}")
-            return NVMeData()
+            return StorageData()
 
-        # ── Capa 2: identidad ────────────────────────────────────────────
-        nvme_device = device_path
-        nvme_model  = "N/A"
-        nvme_capacity = nvme_hours = 0
-        nvme_firmware = "N/A"
-        try:
-            nvme_device, nvme_model, nvme_capacity, nvme_hours, nvme_firmware = (
-                _parse_identity(smart, device_path)
-            )
-        except Exception as exc:
-            print(f"[disk_reader] WARN identidad: {exc}")
+        # ── Detección de tipo ─────────────────────────────────────────────
+        is_rotational = _detect_rotational(device_path)
 
-        # ── Capa 3: SMART health log ─────────────────────────────────────
-        health: dict[str, Any] = {}
-        try:
-            health = _parse_health_log(smart)
-        except Exception as exc:
-            print(f"[disk_reader] WARN health log: {exc}")
-
-        percentage_used    = health.get("percentage_used",    0)
-        available_spare    = health.get("available_spare",  100)
-        media_errors       = health.get("media_errors",       0)
-        data_units_written = health.get("data_units_written", 0)
-        t_max              = health.get("t_max",            45.0)
-        life_pct = max(0, min(100, 100 - percentage_used))
-
-        # ── Capa 4: TBW y WAF ────────────────────────────────────────────
-        lba_written_tb = rated_tbw = remaining_tbw = 0.0
-        waf = nand_written_tb = 0.0
-        try:
-            lba_written_tb, rated_tbw, remaining_tbw = _calc_tbw(
-                data_units_written, percentage_used, nvme_capacity
-            )
-            waf, nand_written_tb = _extract_real_waf(smart, lba_written_tb)
-        except Exception as exc:
-            print(f"[disk_reader] WARN TBW/WAF: {exc}")
-
-        # ── Capa 5: bloques defectuosos y ECC ────────────────────────────
-        bad_blocks = 0
-        ecc_errors = media_errors
-        try:
-            bad_blocks, ecc_errors = _parse_bad_blocks_and_ecc(smart, health)
-        except Exception as exc:
-            print(f"[disk_reader] WARN bad_blocks/ECC: {exc}")
-
-        # ── Capa 6: umbrales booleanos ────────────────────────────────────
-        flags: dict[str, bool] = {}
-        try:
-            flags = _compute_flags(t_max, life_pct, waf,
-                                   bad_blocks, available_spare, ecc_errors)
-        except Exception as exc:
-            print(f"[disk_reader] WARN flags: {exc}")
-
-        # ── Capa 6.5: Detección de naturaleza física (HDD vs SSD) ────────
-        is_rotational = False
-        try:
-            dev_name = Path(device_path).name
-            rot_path = Path(f"/sys/block/{dev_name}/queue/rotational")
-            if rot_path.exists() and rot_path.read_text().strip() == "1":
-                is_rotational = True
-        except Exception:
-            pass
-
-        # ── Capa 7: latencia I/O real (fio) ──────────────────────────────
-        buckets: list[int] = [0] * 10
-        p50 = p95 = p99 = p999 = 0.0
         if is_rotational:
-            print(f"[disk_reader] INFO {device_path} es un HDD mecánico. Omitiendo prueba fio destructiva.")
-            try:
-                subprocess.Popen(["sudo", "smartctl", "-t", "short", device_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+            print(f"[disk_reader] INFO {device_path}: HDD mecánico detectado → "
+                  "rama de cinemática mecánica activa.")
+            return _extract_hdd_data(device_path, smart)
         else:
-            try:
-                buckets, p50, p95, p99, p999 = _run_fio_latency(device_path)
-            except FileNotFoundError:
-                print("[disk_reader] WARN fio no instalado. Latencia no disponible.")
-            except Exception as exc:
-                print(f"[disk_reader] WARN fio: {exc}")
-
-        # ── Ensamblaje final ──────────────────────────────────────────────
-        return NVMeData(
-            nvme_device    = nvme_device,
-            nvme_model     = nvme_model,
-            nvme_capacity  = nvme_capacity,
-            nvme_firmware  = nvme_firmware,
-            nvme_hours     = nvme_hours,
-
-            nvme_tbw_remaining = remaining_tbw,
-            nvme_tbw_rated     = rated_tbw,
-            nvme_lba_written   = lba_written_tb,
-            nvme_nand_written  = nand_written_tb,
-
-            nvme_waf            = round(waf, 3),
-            nvme_waf_ok         = flags.get("nvme_waf_ok",         False),
-            nvme_bad_blocks     = bad_blocks,
-            nvme_bad_blocks_ok  = flags.get("nvme_bad_blocks_ok",  False),
-            nvme_spare_blocks   = available_spare,
-            nvme_spare_ok       = flags.get("nvme_spare_ok",       False),
-            nvme_ecc_errors     = ecc_errors,
-            nvme_ecc_ok         = flags.get("nvme_ecc_ok",         False),
-
-            nvme_t_max   = round(t_max, 1),
-            nvme_temp_ok = flags.get("nvme_temp_ok", False),
-
-            nvme_life_pct = life_pct,
-            nvme_life_ok  = flags.get("nvme_life_ok", False),
-
-            lat_b0 = buckets[0],
-            lat_b1 = buckets[1],
-            lat_b2 = buckets[2],
-            lat_b3 = buckets[3],
-            lat_b4 = buckets[4],
-            lat_b5 = buckets[5],
-            lat_b6 = buckets[6],
-            lat_b7 = buckets[7],
-            lat_b8 = buckets[8],
-            lat_b9 = buckets[9],
-
-            nvme_lat_p50  = p50,
-            nvme_lat_p95  = p95,
-            nvme_lat_p99  = p99,
-            nvme_lat_p999 = p999,
-        )
+            print(f"[disk_reader] INFO {device_path}: SSD/NVMe detectado → "
+                  "rama de estado sólido activa.")
+            return _extract_ssd_data(device_path, smart)
 
     except Exception as exc:    # pragma: no cover — guardia absoluta
         print(f"[disk_reader] ERROR CRÍTICO en extract_disk_data(): {exc}")
-        return NVMeData()
+        return StorageData()

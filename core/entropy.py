@@ -2,34 +2,16 @@
 core/entropy.py
 ===============
 Motor de evaluación de entropía física y degradación termodinámica
-para AuditMaster Lite.
+para probe.tex.
 
-Este módulo reemplaza el concepto de "score 0-100" con un modelo basado
-en la física real del hardware: el Índice de Anomalía (ΔA).
-
-Modelo matemático
------------------
-ΔA es un entero no negativo que comienza en 0 y se acumula con cada
-fallo físico observado en la telemetría de los dataclasses de entrada.
-No es una escala arbitraria de satisfacción: cada incremento corresponde
-a un evento de degradación material específico con magnitud física definida.
-
-Jerarquía de estados
---------------------
-    UNKNOWN   → Telemetría insuficiente para emitir diagnóstico.
-    OPTIMAL   → ΔA = 0. Sin anomalías detectadas.
-    DEGRADED  → ΔA ∈ [1, 49]. Degradación activa. Intervención programable.
-    CRITICAL  → ΔA ≥ 50. Fallo estructural inminente o en curso.
-
-La clasificación global es la del peor subsistema, no un promedio.
-Un único error de RAM (ΔA = 100) colapsa el sistema entero a CRITICAL
-independientemente del estado de los demás subsistemas.
-
-Convenciones de nomenclatura
------------------------------
-_DA_*     : constante de incremento de Índice de Anomalía (int).
-_THR_*    : umbral físico de activación (float o int).
-_eval_*() : función pura de evaluación de subsistema → SubsystemVector.
+CHANGELOG v1.1
+--------------
+* Import StorageData en lugar de NVMeData (alias en models.py).
+* Añadidos umbrales físicos HDD (_THR_HDD_* / _DA_HDD_*).
+* _eval_nvme renombrada a _eval_storage con bifurcación interna:
+    is_hdd=True  → evaluación de cinemática mecánica.
+    is_hdd=False → evaluación de desgaste de estado sólido (sin cambios).
+* evaluate_system_entropy: parámetro `nvme` tipado como StorageData.
 """
 
 from __future__ import annotations
@@ -39,7 +21,8 @@ from enum import Enum
 from typing import Final, Optional
 
 from core.models import (
-    BatteryData, CPUData, GPUData, MotherboardData, NVMeData, RAMData, USBData,
+    BatteryData, CPUData, GPUData, MotherboardData,
+    StorageData, RAMData, USBData,
 )
 
 
@@ -82,7 +65,7 @@ _DA_GPU_PCIE_DEGRADED:        Final[int] = 10
 # ── RAM ──────────────────────────────────────────────────────────────────────
 _DA_RAM_ECC_FAULT:            Final[int] = 100
 
-# ── NVMe ─────────────────────────────────────────────────────────────────────
+# ── NVMe / SSD ───────────────────────────────────────────────────────────────
 _THR_NVME_WAF_DEGRADED:       Final[float] = 3.0
 _THR_NVME_SPARE_PCT_DEGRADED: Final[int]   = 10
 _THR_NVME_LIFE_CRITICAL:      Final[int]   = 5
@@ -95,6 +78,23 @@ _DA_NVME_LIFE_CRITICAL:       Final[int] = 50
 _DA_NVME_LIFE_DEGRADED:       Final[int] = 30
 _DA_NVME_ECC_EXCESS:          Final[int] = 30
 
+# ── HDD Mecánico ─────────────────────────────────────────────────────────────
+#
+# Umbral de seek latency:
+#   Un HDD 7200 RPM en buen estado entrega 8–14 ms (fio randread 4K QD1).
+#   25 ms indica desgaste apreciable del motor de pasos o rozamiento del
+#   cabezal, equivalente a una degradación activa del mecanismo cinemático.
+_THR_HDD_SEEK_DEGRADED_MS:   Final[float] = 25.0
+
+# Umbral de superficie/actuador:
+#   Cualquier valor > 0 para sectores reasignados (ID 5) o command timeouts
+#   (ID 188) implica daño físico real. No existe "degradación tolerable"
+#   para estos indicadores: son binarios.
+_THR_HDD_SURFACE_CRIT_COUNT: Final[int]   = 0   # > 0 → CRITICAL
+
+_DA_HDD_SURFACE_CRITICAL:    Final[int]   = 50  # ΔA ≥ 50 → colapsa a CRITICAL
+_DA_HDD_SEEK_DEGRADED:       Final[int]   = 20  # ΔA ∈ [1,49] → DEGRADED
+
 # ── VRM (Motherboard) ────────────────────────────────────────────────────────
 _THR_VRM_DROOP_DEGRADED:      Final[float] = 0.05
 _THR_VRM_DROOP_CRITICAL:      Final[float] = 0.10
@@ -106,19 +106,13 @@ _DA_VRM_DROOP_CRITICAL:       Final[int] = 50
 _DA_USB_PER_FAILED_PORT:      Final[int] = 10
 _DA_USB_PER_UNSTABLE_PORT:    Final[int] = 5
 
-# ── Batería (Entropía Química) ───────────────────────────────────────────────
-# Wear Level = 100 − SoH (porcentaje de capacidad perdida respecto al diseño).
-# Umbrales derivados de la Guía de Mantenimiento de Baterías de Li-ion:
-#   > 20 % de desgaste → degradación activa de las celdas electroquímicas.
-#   > 40 % de desgaste → ciclo de vida comprometido, riesgo de ciclos
-#                         incompletos y degradación de voltaje bajo carga.
-_THR_BAT_WEAR_DEGRADED:       Final[float] = 20.0  # % wear level → DEGRADED
-_THR_BAT_WEAR_CRITICAL:       Final[float] = 40.0  # % wear level → CRITICAL
+# ── Batería ──────────────────────────────────────────────────────────────────
+_THR_BAT_WEAR_DEGRADED:       Final[float] = 20.0
+_THR_BAT_WEAR_CRITICAL:       Final[float] = 40.0
+_DA_BAT_WEAR_DEGRADED:        Final[int] = 15
+_DA_BAT_WEAR_CRITICAL:        Final[int] = 50
 
-_DA_BAT_WEAR_DEGRADED:        Final[int] = 15   # 1 ≤ 15 < 50  → DEGRADED
-_DA_BAT_WEAR_CRITICAL:        Final[int] = 50   # 50 ≥ 50      → CRITICAL
-
-# ── Clasificación global por ΔA total ────────────────────────────────────────
+# ── Clasificación global ─────────────────────────────────────────────────────
 _DA_GLOBAL_CRITICAL_FLOOR:    Final[int] = 50
 _DA_GLOBAL_DEGRADED_FLOOR:    Final[int] = 1
 
@@ -143,70 +137,40 @@ _BADGE_COMPAT: dict[EntropyState, str] = {
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  DATACLASSES DE SALIDA
+#  DATACLASSES DE SALIDA (sin cambios respecto a v1.0)
 # ════════════════════════════════════════════════════════════════════════════
 
 @dataclass(frozen=True)
 class SubsystemVector:
-    """Vector de diagnóstico para un único subsistema de hardware."""
-
-    subsystem:  str
-    delta_a:    int
-    state:      EntropyState
-    badge:      str
+    subsystem:    str
+    delta_a:      int
+    state:        EntropyState
+    badge:        str
     badge_compat: str
-    directives: tuple[str, ...]
+    directives:   tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class SystemEntropy:
-    """
-    Resultado del análisis de entropía del sistema completo.
-
-    Campos de evaluación
-    --------------------
-    subsystems      : Vectores individuales por subsistema (inmutables).
-    total_delta_a   : Suma acumulada de todos los ΔA individuales.
-    global_state    : Estado del subsistema con mayor ΔA (worst-case).
-    global_badge    : Macro LaTeX del estado global.
-
-    Campos de renderizado LaTeX (bridge → GlobalSummary / DiagnosticReport)
-    -----------------------------------------------------------------------
-    Los campos score_* son derivados: score = clamp(100 − ΔA, 0, 100).
-    Los campos badge_* usan las macros del engine de entropía.
-    Los campos accion_* contienen la primera directiva de intervención
-    del subsistema correspondiente, en texto plano (sin LaTeX).
-    lista_recomendaciones: bloque \\enumerate completo listo para inyección.
-    estado_global_badge: macro de badge compatible para la portada.
-    resumen_ejecutivo: string de diagnóstico global (texto plano).
-
-    Subsistema de Batería (NUEVO)
-    -----------------------------
-    battery, score_bat, badge_bat, accion_bat: refleja la entropía química
-    de las celdas electroquímicas.  En equipos de escritorio (sin batería),
-    battery.state = UNKNOWN y score_bat = 100 (no penaliza el índice global).
-    """
-
     cpu:     SubsystemVector
     gpu:     SubsystemVector
     nvme:    SubsystemVector
     ram:     SubsystemVector
     vrm:     SubsystemVector
     usb:     SubsystemVector
-    battery: SubsystemVector   # NUEVO: entropía química de celdas Li-ion
+    battery: SubsystemVector
 
     total_delta_a: int
     global_state:  EntropyState
     global_badge:  str
 
-    # ── Bridge → GlobalSummary ───────────────────────────────────────────
     score_cpu:    int
     score_gpu:    int
     score_nvme:   int
     score_ram:    int
     score_mobo:   int
     score_usb:    int
-    score_bat:    int    # NUEVO
+    score_bat:    int
     score_global: int
 
     badge_cpu:    str
@@ -215,7 +179,7 @@ class SystemEntropy:
     badge_ram:    str
     badge_mobo:   str
     badge_usb:    str
-    badge_bat:    str    # NUEVO
+    badge_bat:    str
     badge_global: str
 
     accion_cpu:    str
@@ -224,7 +188,7 @@ class SystemEntropy:
     accion_ram:    str
     accion_mobo:   str
     accion_usb:    str
-    accion_bat:    str   # NUEVO
+    accion_bat:    str
     accion_global: str
 
     lista_recomendaciones: str
@@ -249,7 +213,6 @@ def _state_from_delta_a(delta_a: int) -> EntropyState:
 
 
 def _worst_state(*states: EntropyState) -> EntropyState:
-    """Devuelve el estado de mayor severidad. UNKNOWN solo si todos son UNKNOWN."""
     priority: dict[EntropyState, int] = {
         EntropyState.UNKNOWN:  0,
         EntropyState.OPTIMAL:  1,
@@ -264,7 +227,6 @@ def _latex_item(subsystem_label: str, body: str) -> str:
 
 
 def _first_directive_text(directives: tuple[str, ...]) -> str:
-    """Extrae el contenido de texto de la primera directiva LaTeX."""
     if not directives:
         return "Sin anomalías detectadas"
     raw = directives[0]
@@ -323,7 +285,7 @@ def _eval_cpu(cpu: CPUData) -> SubsystemVector:
     thermal_fail = (
         cpu.cpu_delta_t > _THR_CPU_DELTA_T_DISSIPATION
         or cpu.cpu_recovery_time > _THR_CPU_RECOVERY_S
-        or cpu.cpu_recovery_time < 0.0   # centinela: jamás recuperó
+        or cpu.cpu_recovery_time < 0.0
     )
     if thermal_fail and not tjmax_breached:
         delta_a += _DA_CPU_THERMAL_DISSIPATION
@@ -492,12 +454,142 @@ def _eval_ram(ram: RAMData) -> SubsystemVector:
     )
 
 
-def _eval_nvme(nvme: NVMeData) -> SubsystemVector:
-    delta_a:    int         = 0
-    directives: list[str]   = []
+def _eval_storage(storage: StorageData) -> SubsystemVector:
+    """
+    Evalúa la entropía del subsistema de almacenamiento.
 
-    no_telemetry = nvme.nvme_model == "N/A" and nvme.nvme_capacity == 0
-    if no_telemetry:
+    Bifurcación interna
+    -------------------
+    storage.is_hdd=True  → evaluación de cinemática mecánica (HDD).
+    storage.is_hdd=False → evaluación de desgaste de estado sólido (SSD/NVMe).
+
+    Ruta HDD — Modelo de Degradación Mecánica
+    ------------------------------------------
+    Jerarquía de severidad (evaluación completa; los ΔA se acumulan):
+
+    1. CRITICAL (ΔA += 50 por evento) si:
+         hdd_reallocated_sectors > 0  → daño físico en plato confirmado.
+         hdd_command_timeouts    > 0  → fallo del actuador o inestabilidad.
+
+    2. DEGRADED (ΔA += 20) si:
+         hdd_seek_latency_ms > 25.0  → cabezal perdiendo agilidad mecánica.
+
+    Si todos los campos hdd_* son None → UNKNOWN (sin telemetría).
+
+    Ruta SSD/NVMe — idéntica a _eval_nvme v1.0
+    """
+
+    # ════════════════════════════════════════════════════════════════════
+    #  RAMA HDD MECÁNICO
+    # ════════════════════════════════════════════════════════════════════
+    if storage.is_hdd:
+        delta_a:    int       = 0
+        directives: list[str] = []
+
+        no_telemetry_hdd = (
+            storage.hdd_reallocated_sectors is None
+            and storage.hdd_command_timeouts is None
+            and storage.hdd_seek_latency_ms  is None
+            and storage.nvme_model == "N/A"
+        )
+        if no_telemetry_hdd:
+            return SubsystemVector(
+                subsystem="STORAGE-HDD", delta_a=0, state=EntropyState.UNKNOWN,
+                badge=_BADGE[EntropyState.UNKNOWN],
+                badge_compat=_BADGE_COMPAT[EntropyState.UNKNOWN],
+                directives=(
+                    _latex_item(
+                        "Sub-sistema Almacenamiento / HDD",
+                        r"Telemetría SMART y cinemática no disponibles. "
+                        r"Verificar permisos de \texttt{smartctl} "
+                        r"y disponibilidad de \texttt{fio}.",
+                    ),
+                ),
+            )
+
+        # ── Superficie — Sectores Reasignados (ID 5) ─────────────────────
+        reallocated = storage.hdd_reallocated_sectors
+        if reallocated is not None and reallocated > _THR_HDD_SURFACE_CRIT_COUNT:
+            delta_a += _DA_HDD_SURFACE_CRITICAL
+            directives.append(_latex_item(
+                r"Sub-sistema Almacenamiento / HDD Superficie (CRÍTICO)",
+                fr"\textbf{{{reallocated}}} sector(es) reasignado(s) "
+                fr"(SMART ID 5, umbral: $>$ {_THR_HDD_SURFACE_CRIT_COUNT}). "
+                r"Daño físico en plato magnético confirmado. "
+                r"La reasignación activa implica que el cabezal detectó "
+                r"sectores irrecuperables y los redirigió a la zona de reserva. "
+                r"\textbf{Iniciar backup inmediato antes de cualquier otra operación.} "
+                r"Reemplazo de disco mandatorio."
+            ))
+
+        # ── Actuador — Command Timeouts (ID 188) ─────────────────────────
+        cmd_timeouts = storage.hdd_command_timeouts
+        if cmd_timeouts is not None and cmd_timeouts > _THR_HDD_SURFACE_CRIT_COUNT:
+            delta_a += _DA_HDD_SURFACE_CRITICAL
+            directives.append(_latex_item(
+                r"Sub-sistema Almacenamiento / HDD Actuador (CRÍTICO)",
+                fr"\textbf{{{cmd_timeouts}}} timeout(s) de comando "
+                fr"(SMART ID 188, umbral: $>$ {_THR_HDD_SURFACE_CRIT_COUNT}). "
+                r"Inestabilidad mecánica del actuador o degradación del enlace SATA. "
+                r"Riesgo de pérdida de datos bajo escritura sostenida. "
+                r"Reemplazo urgente recomendado."
+            ))
+
+        # ── Cinemática — Seek Latency (fio) ──────────────────────────────
+        seek_ms = storage.hdd_seek_latency_ms
+        if seek_ms is not None and seek_ms > _THR_HDD_SEEK_DEGRADED_MS:
+            delta_a += _DA_HDD_SEEK_DEGRADED
+            directives.append(_latex_item(
+                r"Sub-sistema Almacenamiento / HDD Cinemática",
+                fr"Seek latency media: \textbf{{{seek_ms:.2f}\ ms}} "
+                fr"(umbral: {_THR_HDD_SEEK_DEGRADED_MS:.0f}\ ms, "
+                r"fio randread 4K QD1, 10 s). "
+                r"El cabezal exhibe pérdida de agilidad mecánica: "
+                r"probable desgaste del motor de pasos (stepper) "
+                r"o rozamiento inicial del cabezal con la superficie del plato. "
+                r"Planificar reemplazo preventivo en el próximo ciclo de mantenimiento."
+            ))
+
+        state = _state_from_delta_a(delta_a)
+        if not directives:
+            spin_str = (
+                fr"{storage.hdd_spin_up_time}\ ms"
+                if storage.hdd_spin_up_time is not None else r"\textit{N/D}"
+            )
+            seek_str = (
+                fr"{seek_ms:.2f}\ ms" if seek_ms is not None else r"\textit{N/D}"
+            )
+            realloc_str = (
+                str(reallocated) if reallocated is not None else r"\textit{N/D}"
+            )
+            timeout_str = (
+                str(cmd_timeouts) if cmd_timeouts is not None else r"\textit{N/D}"
+            )
+            directives.append(_latex_item(
+                "Sub-sistema Almacenamiento / HDD",
+                fr"Sin anomalías mecánicas detectadas. "
+                fr"Spin-up (ID 3): {spin_str}. "
+                fr"Seek latency: {seek_str}. "
+                fr"Sectores reasignados (ID 5): {realloc_str}. "
+                fr"Command timeouts (ID 188): {timeout_str}."
+            ))
+
+        return SubsystemVector(
+            subsystem="STORAGE-HDD", delta_a=delta_a, state=state,
+            badge=_BADGE[state], badge_compat=_BADGE_COMPAT[state],
+            directives=tuple(directives),
+        )
+
+    # ════════════════════════════════════════════════════════════════════
+    #  RAMA SSD/NVMe — idéntica a _eval_nvme v1.0
+    # ════════════════════════════════════════════════════════════════════
+    delta_a_ssd:    int       = 0
+    directives_ssd: list[str] = []
+
+    no_telemetry_ssd = (
+        storage.nvme_model == "N/A" and storage.nvme_capacity == 0
+    )
+    if no_telemetry_ssd:
         return SubsystemVector(
             subsystem="NVME", delta_a=0, state=EntropyState.UNKNOWN,
             badge=_BADGE[EntropyState.UNKNOWN],
@@ -508,67 +600,67 @@ def _eval_nvme(nvme: NVMeData) -> SubsystemVector:
             ),
         )
 
-    if nvme.nvme_life_pct < _THR_NVME_LIFE_CRITICAL:
-        delta_a += _DA_NVME_LIFE_CRITICAL
-        directives.append(_latex_item(
+    if storage.nvme_life_pct < _THR_NVME_LIFE_CRITICAL:
+        delta_a_ssd += _DA_NVME_LIFE_CRITICAL
+        directives_ssd.append(_latex_item(
             "Sub-sistema NAND / Vida Útil (CRÍTICO)",
-            fr"Vida útil restante: \textbf{{{nvme.nvme_life_pct}\%}} "
+            fr"Vida útil restante: \textbf{{{storage.nvme_life_pct}\%}} "
             fr"(umbral crítico: {_THR_NVME_LIFE_CRITICAL}\%). "
             r"Falla estructural NAND inminente. Reemplazo mandatorio. "
             r"Iniciar backup inmediato antes de cualquier otra operación."
         ))
-    elif nvme.nvme_life_pct < _THR_NVME_LIFE_DEGRADED:
-        delta_a += _DA_NVME_LIFE_DEGRADED
-        directives.append(_latex_item(
+    elif storage.nvme_life_pct < _THR_NVME_LIFE_DEGRADED:
+        delta_a_ssd += _DA_NVME_LIFE_DEGRADED
+        directives_ssd.append(_latex_item(
             "Sub-sistema NAND / Vida Útil",
-            fr"Vida útil restante: {nvme.nvme_life_pct}\% "
+            fr"Vida útil restante: {storage.nvme_life_pct}\% "
             fr"(umbral: {_THR_NVME_LIFE_DEGRADED}\%). "
             r"Planificar reemplazo en el próximo ciclo de mantenimiento."
         ))
 
-    if nvme.nvme_waf > _THR_NVME_WAF_DEGRADED:
-        delta_a += _DA_NVME_WAF_EXCESS
-        directives.append(_latex_item(
+    if storage.nvme_waf > _THR_NVME_WAF_DEGRADED:
+        delta_a_ssd += _DA_NVME_WAF_EXCESS
+        directives_ssd.append(_latex_item(
             "Sub-sistema NAND / WAF",
-            fr"Write Amplification Factor = {nvme.nvme_waf:.2f} "
+            fr"Write Amplification Factor = {storage.nvme_waf:.2f} "
             fr"(umbral: {_THR_NVME_WAF_DEGRADED:.1f}). "
             r"El controlador NAND está realizando un número excesivo de "
             r"reescrituras internas. Analizar patrón de acceso del workload. "
             r"Verificar alineación de particiones."
         ))
 
-    if nvme.nvme_spare_blocks < _THR_NVME_SPARE_PCT_DEGRADED:
-        delta_a += _DA_NVME_SPARE_DEPLETED
-        directives.append(_latex_item(
+    if storage.nvme_spare_blocks < _THR_NVME_SPARE_PCT_DEGRADED:
+        delta_a_ssd += _DA_NVME_SPARE_DEPLETED
+        directives_ssd.append(_latex_item(
             "Sub-sistema NAND / Bloques de Repuesto",
-            fr"Spare blocks disponibles: {nvme.nvme_spare_blocks}\% "
+            fr"Spare blocks disponibles: {storage.nvme_spare_blocks}\% "
             fr"(umbral mínimo: {_THR_NVME_SPARE_PCT_DEGRADED}\%). "
             r"Over-provisioning de la NAND prácticamente agotado. "
             r"Reemplazo programado urgente."
         ))
 
-    if nvme.nvme_ecc_errors >= _THR_NVME_ECC_DEGRADED:
-        delta_a += _DA_NVME_ECC_EXCESS
-        directives.append(_latex_item(
+    if storage.nvme_ecc_errors >= _THR_NVME_ECC_DEGRADED:
+        delta_a_ssd += _DA_NVME_ECC_EXCESS
+        directives_ssd.append(_latex_item(
             "Sub-sistema NAND / ECC",
-            fr"{nvme.nvme_ecc_errors} errores ECC corregibles acumulados "
+            fr"{storage.nvme_ecc_errors} errores ECC corregibles acumulados "
             fr"(umbral: {_THR_NVME_ECC_DEGRADED}). "
             r"Tasa de errores NAND elevada. Indicativo de desgaste de celdas. "
             r"Monitorear con frecuencia creciente."
         ))
 
-    state = _state_from_delta_a(delta_a)
-    if not directives:
-        directives.append(_latex_item(
+    state_ssd = _state_from_delta_a(delta_a_ssd)
+    if not directives_ssd:
+        directives_ssd.append(_latex_item(
             "Sub-sistema NVMe",
-            fr"Sin anomalías de desgaste. Vida restante: {nvme.nvme_life_pct}\%. "
-            fr"WAF: {nvme.nvme_waf:.2f}. TBW restante: {nvme.nvme_tbw_remaining:.1f} TB."
+            fr"Sin anomalías de desgaste. Vida restante: {storage.nvme_life_pct}\%. "
+            fr"WAF: {storage.nvme_waf:.2f}. TBW restante: {storage.nvme_tbw_remaining:.1f} TB."
         ))
 
     return SubsystemVector(
-        subsystem="NVME", delta_a=delta_a, state=state,
-        badge=_BADGE[state], badge_compat=_BADGE_COMPAT[state],
-        directives=tuple(directives),
+        subsystem="NVME", delta_a=delta_a_ssd, state=state_ssd,
+        badge=_BADGE[state_ssd], badge_compat=_BADGE_COMPAT[state_ssd],
+        directives=tuple(directives_ssd),
     )
 
 
@@ -589,7 +681,6 @@ def _eval_vrm(mobo: MotherboardData) -> SubsystemVector:
         )
 
     v_nominal: float = mobo.vrm_tol_high / 1.05
-
     if v_nominal <= 0.0:
         return SubsystemVector(
             subsystem="VRM", delta_a=0, state=EntropyState.UNKNOWN,
@@ -694,55 +785,6 @@ def _eval_usb(usb: USBData) -> SubsystemVector:
 
 
 def _eval_battery(battery: BatteryData) -> SubsystemVector:
-    """
-    Evalúa la entropía química del subsistema de batería.
-
-    Modelo de Degradación Electroquímica
-    -------------------------------------
-    El Wear Level (WL) representa la fracción de capacidad electroquímica
-    perdida de forma irreversible respecto a la especificación de fábrica:
-
-        WL (%) = (1 − bat_full_cap / bat_design_cap) × 100
-               = 100 − bat_soh
-
-    Cada ciclo de carga intercala litio entre los electrodos, formando
-    gradualmente una capa de SEI (Solid Electrolyte Interphase) que
-    reduce la capacidad activa de las celdas.
-
-    Umbrales de ΔA
-    --------------
-    WL > _THR_BAT_WEAR_CRITICAL (40 %) → ΔA += 50  → CRITICAL
-      Ciclo de vida comprometido. Riesgo de corte abrupto bajo cargas pico.
-      ΔA = 50 colapsa el estado directamente a CRITICAL (≥ _DA_GLOBAL_CRITICAL_FLOOR).
-
-    WL ∈ (_THR_BAT_WEAR_DEGRADED, _THR_BAT_WEAR_CRITICAL] → ΔA += 15 → DEGRADED
-      Autonomía reducida. Intervención planificada recomendada.
-
-    Los umbrales son mutuamente excluyentes: si WL > 40%, solo se aplica
-    _DA_BAT_WEAR_CRITICAL (50), no la suma 15 + 50.
-
-    Caso sin batería (escritorio)
-    ------------------------------
-    Si battery_present=False → UNKNOWN, ΔA = 0.
-    Un equipo de escritorio sin batería no tiene entropía química:
-    no se penaliza el índice global.
-
-    Caso sin telemetría (batería presente pero datos ilegibles)
-    -----------------------------------------------------------
-    Si bat_soh=0 Y bat_design_cap=0 → UNKNOWN, ΔA = 0.
-    Honestidad forense: sin datos no se emite diagnóstico.
-
-    Parameters
-    ----------
-    battery : BatteryData
-        Instancia del dataclass de batería (presente o no).
-
-    Returns
-    -------
-    SubsystemVector
-        Vector de diagnóstico con ΔA, estado y directivas LaTeX.
-    """
-    # ── Sin batería: equipo de escritorio o batería no detectada ─────────
     if not battery.battery_present:
         return SubsystemVector(
             subsystem="BAT", delta_a=0, state=EntropyState.UNKNOWN,
@@ -755,7 +797,6 @@ def _eval_battery(battery: BatteryData) -> SubsystemVector:
             ),
         )
 
-    # ── Sin telemetría: batería presente pero datos de capacidad ilegibles ─
     no_telemetry = battery.bat_soh == 0 and battery.bat_design_cap == 0
     if no_telemetry:
         return SubsystemVector(
@@ -769,15 +810,11 @@ def _eval_battery(battery: BatteryData) -> SubsystemVector:
             ),
         )
 
-    # ── Cálculo del Wear Level ────────────────────────────────────────────
-    wear_level: float = 100.0 - battery.bat_soh   # % degradación
-
+    wear_level: float = 100.0 - battery.bat_soh
     delta_a:    int         = 0
     directives: list[str]   = []
 
     if wear_level > _THR_BAT_WEAR_CRITICAL:
-        # Nivel crítico: supera el 40 % de desgaste acumulado.
-        # No se acumula el ΔA de DEGRADED: se aplica directamente CRITICAL.
         delta_a += _DA_BAT_WEAR_CRITICAL
         directives.append(_latex_item(
             r"Sub-sistema Batería / Desgaste Electroquímico (CRÍTICO)",
@@ -791,9 +828,7 @@ def _eval_battery(battery: BatteryData) -> SubsystemVector:
             r"Riesgo de corte abrupto de voltaje bajo cargas pico. "
             r"Reemplazo de batería mandatorio para garantizar operación fiable."
         ))
-
     elif wear_level > _THR_BAT_WEAR_DEGRADED:
-        # Nivel degradado: supera el 20 % de desgaste.
         delta_a += _DA_BAT_WEAR_DEGRADED
         directives.append(_latex_item(
             r"Sub-sistema Batería / Desgaste Electroquímico",
@@ -807,12 +842,7 @@ def _eval_battery(battery: BatteryData) -> SubsystemVector:
             r"ciclo de mantenimiento preventivo."
         ))
 
-    # ── Resistencia interna elevada (indicador adicional de degradación) ──
-    # No suma ΔA propio; es un dato informativo que enriquece la directiva.
-    # R_int > 200 mΩ en una celda Li-ion típica indica degradación avanzada
-    # del electrolito o del SEI (rango nominal: 50–150 mΩ).
     if battery.bat_resistance is not None and battery.bat_resistance > 200.0 and delta_a == 0:
-        # Solo reportar si aún no hay directiva de desgaste (para no redundar).
         directives.append(_latex_item(
             r"Sub-sistema Batería / Resistencia Interna",
             fr"$R_{{\text{{int}}}}$ estimada = {battery.bat_resistance:.1f} m$\Omega$ "
@@ -839,16 +869,10 @@ def _eval_battery(battery: BatteryData) -> SubsystemVector:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  ENSAMBLAJE DE LA LISTA DE RECOMENDACIONES LaTeX
+#  ENSAMBLAJE DE LA LISTA DE RECOMENDACIONES
 # ════════════════════════════════════════════════════════════════════════════
 
 def _build_directives_latex(vectors: list[SubsystemVector]) -> str:
-    """
-    Construye el bloque de items LaTeX para ``lista_recomendaciones``.
-
-    Solo incluye directivas de subsistemas con ΔA > 0 o estado UNKNOWN.
-    Los subsistemas OPTIMAL con la directiva genérica se omiten del log.
-    """
     items: list[str] = []
     for vec in vectors:
         if vec.state in (EntropyState.DEGRADED, EntropyState.CRITICAL, EntropyState.UNKNOWN):
@@ -867,7 +891,7 @@ def _build_directives_latex(vectors: list[SubsystemVector]) -> str:
 # ════════════════════════════════════════════════════════════════════════════
 
 _RESUMEN_TEMPLATE: dict[EntropyState, str] = {
-    EntropyState.OPTIMAL:  (
+    EntropyState.OPTIMAL: (
         "Sistema operando dentro de parámetros nominales en todos los subsistemas. "
         "No se registran anomalías físicas en la ventana de diagnóstico."
     ),
@@ -876,12 +900,12 @@ _RESUMEN_TEMPLATE: dict[EntropyState, str] = {
         "El hardware opera fuera de su especificación óptima. "
         "Se requiere intervención técnica en el próximo ciclo de mantenimiento."
     ),
-    EntropyState.CRITICAL:  (
+    EntropyState.CRITICAL: (
         "Estado crítico confirmado. Fallo estructural inminente o en curso. "
         "La continuidad operativa del sistema no está garantizada. "
         "Intervención inmediata mandatoria antes de cualquier operación de producción."
     ),
-    EntropyState.UNKNOWN:   (
+    EntropyState.UNKNOWN: (
         "Telemetría insuficiente para emitir diagnóstico definitivo. "
         "Verificar permisos de los extractores y la presencia del hardware."
     ),
@@ -895,82 +919,52 @@ _RESUMEN_TEMPLATE: dict[EntropyState, str] = {
 def evaluate_system_entropy(
     cpu:     CPUData,
     gpu:     GPUData,
-    nvme:    NVMeData,
+    nvme:    StorageData,           # ← CAMBIADO: StorageData (ex NVMeData)
     ram:     RAMData,
     mobo:    MotherboardData,
     usb:     USBData,
-    battery: Optional[BatteryData] = None,   # NUEVO — opcional para compatibilidad
+    battery: Optional[BatteryData] = None,
 ) -> SystemEntropy:
     """
     Evalúa la entropía física y química del sistema completo.
 
-    El cálculo es determinista y sin estado: la misma telemetría produce
-    siempre el mismo resultado. No se realizan operaciones de I/O.
-
-    Algoritmo
-    ---------
-    1. Evaluar cada subsistema de forma independiente → SubsystemVector.
-    2. Sumar los ΔA individuales → total_delta_a.
-    3. global_state = estado del subsistema de mayor severidad (worst-case).
-    4. Derivar los campos de bridge para el template LaTeX existente.
-
-    Batería (NUEVO)
-    ---------------
-    Si battery es None (compatibilidad hacia atrás), se usa BatteryData()
-    con battery_present=False, lo que produce state=UNKNOWN y delta_a=0.
-    El índice global no se penaliza por la ausencia del parámetro.
-
-    Si battery.battery_present=False (desktop/servidor), mismo resultado:
-    UNKNOWN, ΔA=0. Un equipo sin batería no tiene entropía química medible.
-
-    Parameters
-    ----------
-    cpu, gpu, nvme, ram, mobo, usb : Instancias de los dataclasses del modelo.
-    battery : BatteryData opcional. None → usa BatteryData() (no presente).
-
-    Returns
-    -------
-    SystemEntropy
-        Resultado inmutable (frozen dataclass). Nunca lanza excepciones
-        ante datos de entrada inconsistentes.
+    CAMBIO v1.1: parámetro `nvme` tipado como StorageData.
+    La bifurcación HDD/SSD ocurre internamente en _eval_storage().
     """
-    # Normalizar battery: si no se pasó, usar instancia neutra (no presente).
     bat_data: BatteryData = battery if battery is not None else BatteryData()
 
     vec_cpu     = _eval_cpu(cpu)
     vec_gpu     = _eval_gpu(gpu)
     vec_ram     = _eval_ram(ram)
-    vec_nvme    = _eval_nvme(nvme)
+    vec_nvme    = _eval_storage(nvme)   # ← CAMBIADO: _eval_storage
     vec_vrm     = _eval_vrm(mobo)
     vec_usb     = _eval_usb(usb)
-    vec_battery = _eval_battery(bat_data)   # NUEVO
+    vec_battery = _eval_battery(bat_data)
 
     vectors: list[SubsystemVector] = [
         vec_cpu, vec_gpu, vec_ram, vec_nvme, vec_vrm, vec_usb, vec_battery
     ]
 
-    total_delta_a: int         = sum(v.delta_a for v in vectors)
+    total_delta_a: int          = sum(v.delta_a for v in vectors)
     global_state:  EntropyState = _worst_state(*(v.state for v in vectors))
     global_badge:  str          = _BADGE[global_state]
 
-    # ── Bridge: scores derivados de ΔA individual ────────────────────────
     score_cpu    = _clamp_score(vec_cpu.delta_a)
     score_gpu    = _clamp_score(vec_gpu.delta_a)
     score_nvme   = _clamp_score(vec_nvme.delta_a)
     score_ram    = _clamp_score(vec_ram.delta_a)
     score_mobo   = _clamp_score(vec_vrm.delta_a)
     score_usb    = _clamp_score(vec_usb.delta_a)
-    score_bat    = _clamp_score(vec_battery.delta_a)   # NUEVO
+    score_bat    = _clamp_score(vec_battery.delta_a)
     score_global = _clamp_score(total_delta_a)
 
-    # ── Bridge: acciones primarias por subsistema (texto plano) ──────────
     accion_cpu    = _first_directive_text(vec_cpu.directives)
     accion_gpu    = _first_directive_text(vec_gpu.directives)
     accion_nvme   = _first_directive_text(vec_nvme.directives)
     accion_ram    = _first_directive_text(vec_ram.directives)
     accion_mobo   = _first_directive_text(vec_vrm.directives)
     accion_usb    = _first_directive_text(vec_usb.directives)
-    accion_bat    = _first_directive_text(vec_battery.directives)   # NUEVO
+    accion_bat    = _first_directive_text(vec_battery.directives)
     accion_global = _RESUMEN_TEMPLATE[global_state].split(".")[0] + "."
 
     return SystemEntropy(
@@ -980,7 +974,7 @@ def evaluate_system_entropy(
         ram     = vec_ram,
         vrm     = vec_vrm,
         usb     = vec_usb,
-        battery = vec_battery,   # NUEVO
+        battery = vec_battery,
 
         total_delta_a = total_delta_a,
         global_state  = global_state,
@@ -992,7 +986,7 @@ def evaluate_system_entropy(
         score_ram    = score_ram,
         score_mobo   = score_mobo,
         score_usb    = score_usb,
-        score_bat    = score_bat,    # NUEVO
+        score_bat    = score_bat,
         score_global = score_global,
 
         badge_cpu    = vec_cpu.badge_compat,
@@ -1001,7 +995,7 @@ def evaluate_system_entropy(
         badge_ram    = vec_ram.badge_compat,
         badge_mobo   = vec_vrm.badge_compat,
         badge_usb    = vec_usb.badge_compat,
-        badge_bat    = vec_battery.badge_compat,   # NUEVO
+        badge_bat    = vec_battery.badge_compat,
         badge_global = _BADGE_COMPAT[global_state],
 
         accion_cpu    = accion_cpu,
@@ -1010,7 +1004,7 @@ def evaluate_system_entropy(
         accion_ram    = accion_ram,
         accion_mobo   = accion_mobo,
         accion_usb    = accion_usb,
-        accion_bat    = accion_bat,    # NUEVO
+        accion_bat    = accion_bat,
         accion_global = accion_global,
 
         lista_recomendaciones = _build_directives_latex(vectors),
