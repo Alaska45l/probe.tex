@@ -27,6 +27,13 @@ from rich.table import Column
 from rich.text import Text
 
 
+_ACTIVE_STATE: TuiState | None = None
+
+def runtime_log(msg: str) -> None:
+    """Envía un mensaje real a la terminal desde cualquier hilo."""
+    if _ACTIVE_STATE:
+        _ACTIVE_STATE.update(log=msg)
+
 # ── Palette ───────────────────────────────────────────────────────────────────
 
 class C:
@@ -278,8 +285,10 @@ def _compose(state: TuiState) -> Layout:
 # ── Orchestration ──────────────────────────────────────────────────────────────
 
 def run_tui(target_func: Callable[[], None]) -> None:
+    global _ACTIVE_STATE
     console    = Console()
     state      = TuiState()
+    _ACTIVE_STATE = state
     
     state.start()  # <--- INYECTA ESTA LÍNEA AQUÍ
     
@@ -313,19 +322,6 @@ def run_tui(target_func: Callable[[], None]) -> None:
             while not done_event.is_set():
                 elapsed = time.monotonic() - start_t
                 pct     = min(99.0, (elapsed / ASSUMED_S) * 100)
-
-                if elapsed >  2.0 and len(state.logs) < 2:
-                    state.update(log="ThreadPoolExecutor online — workers dispatched.")
-                if elapsed >  8.0 and len(state.logs) < 3:
-                    state.update(log="stress-ng: CPU matrix stressor engaged (16 workers).")
-                if elapsed > 18.0 and len(state.logs) < 4:
-                    state.update(log="Thermal sensor array: core Δ+31 °C detected.")
-                if elapsed > 28.0 and len(state.logs) < 5:
-                    state.update(log="NVMe latency sweep: P99=112 µs — within spec.")
-                if elapsed > 36.0 and len(state.logs) < 6:
-                    state.update(log="Awaiting thermal recovery window (τ≈8s).")
-                if elapsed > 42.0 and len(state.logs) < 7:
-                    state.update(log="Assembling Ring-0 data contract...")
 
                 state.update(pct=pct)
                 live.update(_compose(state.snapshot()), refresh=True)

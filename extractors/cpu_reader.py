@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Final, Optional
 
 from core.models import CPUData
+from tui import runtime_log
 
 # ════════════════════════════════════════════════════════════════════════════
 #  CONSTANTES
@@ -371,6 +372,7 @@ def _active_thermal_test(tjmax: int) -> tuple[float, float, float, float, str]:
     proc: Optional[subprocess.Popen] = None
     stress_ok = False
     try:
+        runtime_log("stress-ng: Saturando núcleos para prueba de recuperación...")
         proc = subprocess.Popen(
             ["stress-ng", "--cpu", "0", "--timeout", f"{_STRESS_DURATION_S}s"],
             stdout=subprocess.DEVNULL,
@@ -525,6 +527,7 @@ def _detect_pstate_driver() -> str:
 
 
 def _build_pstates(max_mhz: int, min_mhz: int) -> dict:
+    runtime_log("CPU: Analizando estabilidad de escalado de frecuencia...")
     if max_mhz < 800:
         max_mhz = 3000
     if min_mhz < 100:

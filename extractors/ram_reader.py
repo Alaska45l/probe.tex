@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Final, Optional
 
 from core.models import RAMData
+from tui import runtime_log
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -345,6 +346,7 @@ def _run_memtester() -> int:
     """
     size = _compute_memtester_size()
     try:
+        runtime_log(f"memtester: Auditando {size}B de RAM (Live OS safe mode)...")
         result = subprocess.run(
             ["sudo", "memtester", size, str(_MEMTESTER_LOOPS)],
             capture_output=True,

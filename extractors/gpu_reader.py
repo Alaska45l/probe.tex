@@ -65,6 +65,7 @@ from pathlib import Path
 from typing import Final, Optional
 
 from core.models import GPUData
+from tui import runtime_log
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -519,6 +520,7 @@ def _run_vram_stress_test(
 
     # ── NVIDIA → cuda-memtest ──────────────────────────────────────────────
     if "nvidia" in d:
+        runtime_log("CUDA: Lanzando test de integridad de VRAM...")
         try:
             r = subprocess.run(
                 ["cuda-memtest"],
@@ -697,6 +699,7 @@ def _active_thermal_test_gpu(
     proc: Optional[subprocess.Popen] = None
     stress_ok = False
     try:
+        runtime_log("GPU: Iniciando carga matricial para medición de Hotspot...")
         proc = subprocess.Popen(
             ["stress-ng", "--matrix", "0",
              "--timeout", f"{_GPU_STRESS_DURATION_S}s"],

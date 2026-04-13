@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Final, Optional
 
 from core.models import StorageData
+from tui import runtime_log
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -372,6 +373,7 @@ def _extract_hdd_data(device_path: str, smart: dict) -> StorageData:
     try:
         print(f"[disk_reader] INFO HDD detectado en {device_path}. "
               "Ejecutando test de seek latency (fio 10s)...")
+        runtime_log(f"fio: Measuring physical seek latency on {device_path}...")
         seek_ms = _run_fio_seek_latency_hdd(device_path)
     except Exception as exc:
         print(f"[disk_reader] WARN HDD fio seek: {exc}")
@@ -630,6 +632,7 @@ def _extract_ssd_data(device_path: str, smart: dict) -> StorageData:
     buckets: list[int] = [0] * 10
     p50 = p95 = p99 = p999 = 0.0
     try:
+        runtime_log(f"fio: Sweeping NVMe/SSD latency on {device_path}...")
         buckets, p50, p95, p99, p999 = _run_fio_latency_ssd(device_path)
     except FileNotFoundError:
         print("[disk_reader] WARN fio no instalado. Latencia SSD no disponible.")

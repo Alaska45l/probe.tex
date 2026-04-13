@@ -21,7 +21,7 @@ from extractors.ram_reader import extract_ram_data
 from extractors.gpu_reader import extract_gpu_data
 from extractors.usb_reader import extract_usb_data
 from extractors.battery_reader import extract_battery_data
-from tui import run_tui
+from tui import run_tui, runtime_log
 
 def _enumerate_storage_devices() -> list[str]:
     """
@@ -127,7 +127,7 @@ def render_pdf(outdir: Path | None = None) -> None:
     outdir: directorio de salida para .tex y .pdf.
             Si None → /tmp (Live OS safe).
     """
-    print("[*] Iniciando extracción de datos estáticos concurrente...")
+    runtime_log("Ring-0: Iniciando barrido concurrente de hardware...")
     start_time = time.time()
 
     # ── NUEVO: enumerar discos ANTES de lanzar el ThreadPoolExecutor ──────
@@ -149,7 +149,9 @@ def render_pdf(outdir: Path | None = None) -> None:
     # FASE 1: extractores sin carga activa (paralelos, seguros)
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         # ── CAMBIADO: future único que extrae TODOS los discos ────────────
+        runtime_log("Storage: Enumerating physical block devices...")
         future_disk = executor.submit(_extract_all_drives, devices)
+        runtime_log("RAM: Analizando topología y lanzando memtester...")
         future_ram  = executor.submit(extract_ram_data)
         future_mobo = executor.submit(extract_motherboard_data)
         future_usb  = executor.submit(extract_usb_data)
@@ -186,21 +188,19 @@ def render_pdf(outdir: Path | None = None) -> None:
             print("[main] WARN extractor bat superó timeout.")
             bat_data = BatteryData()
 
-    print("[*] Extracción estática completada. Iniciando forense activo secuencial...")
-
-    print("[*]   → Test térmico CPU (30s carga + 15s enfriamiento)...")
+    runtime_log("CPU: Ejecutando perfilado térmico y de P-States...")
     cpu_data = extract_cpu_data()
 
-    print("[*]   → Test térmico GPU (20s carga + 10s enfriamiento)...")
+    runtime_log("GPU: Verificando sensores de Hotspot y enlace PCIe...")
     gpu_data = extract_gpu_data()
 
     end_time = time.time()
     duracion_segundos = round(end_time - start_time, 1)
     
-    print(f"[*] Extracción finalizada en {duracion_segundos} segundos.")
+    runtime_log(f"Extraction sequence halted. Duration: {duracion_segundos}s.")
 
-    print("[*] Extrayendo metadatos de host (anillo 0)...")
     # Número de serie de la placa base vía DMI
+    runtime_log("DMI: Extracting host metadata and motherboard serial...")
     try:
         sn_raw = subprocess.run(["sudo", "dmidecode", "-s", "system-serial-number"], 
                                 capture_output=True, text=True, timeout=2).stdout.strip()
@@ -212,7 +212,6 @@ def render_pdf(outdir: Path | None = None) -> None:
     kernel_version = platform.release()
     fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    print("[*] Ejecutando análisis termodinámico y estructural (Invariant)...")
     # ── CAMBIADO: parámetro renombrado nvme → storage_drives ─────────────
     entropy_data = evaluate_system_entropy(
         cpu            = cpu_data,
@@ -224,7 +223,7 @@ def render_pdf(outdir: Path | None = None) -> None:
         battery        = bat_data,
     )
 
-    print("[*] Ensamblando contrato de datos...")
+    runtime_log("Assembling Ring-0 data contract...")
     report = DiagnosticReport(
         metadata=ReportMetadata(
             report_id="INV-2026-001",
@@ -250,7 +249,7 @@ def render_pdf(outdir: Path | None = None) -> None:
         battery        = bat_data,
     )
 
-    print("[*] Configurando motor de renderizado Jinja2-LaTeX...")
+    runtime_log("Jinja2: Instantiating LaTeX rendering engine...")
     latex_env = jinja2.Environment(
         block_start_string='[%', block_end_string='%]',
         variable_start_string='<<', variable_end_string='>>',
@@ -298,11 +297,11 @@ def render_pdf(outdir: Path | None = None) -> None:
     out      = outdir or Path("/tmp")
     tex_path = out / "reporte_generado.tex"
 
-    print(f"[*] Inyectando variables y escribiendo {tex_path} ...")
+    runtime_log(f"I/O: Writing generated TeX source to {tex_path.name}...")
     tex_output = template.render(**context)
     tex_path.write_text(tex_output, encoding="utf-8")
 
-    print("[*] Compilando PDF con tectonic...")
+    runtime_log("Tectonic: Compilando reporte forense final...")
     try:
         subprocess.run(
             ["tectonic", "--outdir", str(out), str(tex_path)],

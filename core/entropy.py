@@ -24,6 +24,7 @@ from core.models import (
     BatteryData, CPUData, GPUData, MotherboardData,
     StorageData, RAMData, USBData,
 )
+from tui import runtime_log
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -958,6 +959,7 @@ def evaluate_system_entropy(
        Ahora representa el vector agregado del conjunto de almacenamiento,
        no una unidad individual.
     """
+    runtime_log("Entropy: Calculando degradación termodinámica global...")
     bat_data: BatteryData = battery if battery is not None else BatteryData()
 
     # ── Evaluaciones individuales (sin cambios) ───────────────────────────
