@@ -211,6 +211,24 @@ def _tdp_from_rapl() -> int:
 #  CAPA 4 — sensors / hwmon: temperaturas y TjMax
 # ════════════════════════════════════════════════════════════════════════════
 
+def _ensure_sensor_modules() -> None:
+    """
+    Intenta cargar los módulos de sensores de temperatura más comunes.
+    Silencioso: si modprobe falla (módulo compilado estáticamente o ausente),
+    los fallbacks sysfs hwmon siguen funcionando.
+    Llamar una vez al inicio de extract_cpu_data().
+    """
+    _SENSOR_MODULES = ("coretemp", "k10temp", "zenpower", "nct6775", "it87")
+    for module in _SENSOR_MODULES:
+        try:
+            subprocess.run(
+                ["modprobe", module],
+                capture_output=True, timeout=3,
+            )
+        except Exception:
+            pass  # Silencioso: módulo ausente o ya cargado
+
+
 def _find_cpu_chip(sensors_json: dict) -> tuple[str, dict]:
     for prefix in _SENSOR_CHIP_PRIORITY:
         for chip_name, chip_data in sensors_json.items():
@@ -723,6 +741,8 @@ def extract_cpu_data() -> CPUData:
             cpu_tdp = _tdp_from_rapl()
         except Exception:
             pass
+
+        _ensure_sensor_modules()
 
         # ── Capa 4: sensors — temperatura idle baseline y TjMax ──────────
         # Se usa también como fallback si stress-ng no está disponible.

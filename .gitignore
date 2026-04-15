@@ -31,8 +31,9 @@ reporte_generado.tex
 
 # ── Entorno Archiso (truth-machine) ───────
 # Directorios de trabajo de mkarchiso
-work/
+work_dir/
 out/
+probe-tex-iso/
 *.iso
 
 # ── Editores y SO ─────────────────────────

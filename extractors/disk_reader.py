@@ -36,6 +36,7 @@ stdlib únicamente: subprocess, json, pathlib.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Final, Optional
@@ -50,6 +51,9 @@ from tui import runtime_log
 
 _BYTES_PER_SMART_UNIT: int   = 512_000
 _BYTES_PER_TB:         float = 1e12
+
+_NVME_CLI_TIMEOUT: Final[int] = 8
+"""Timeout para nvme-cli. Comandos NVMe son sub-segundo; 8s es margen amplio."""
 
 _TEMP_THRESHOLD:    float = 70.0
 _LIFE_THRESHOLD:    int   = 20
@@ -88,12 +92,24 @@ _SMART_ID_COMMAND_TIMEOUT:      Final[int] = 188
 #  UTILIDADES DE BAJO NIVEL
 # ════════════════════════════════════════════════════════════════════════════
 
-def _run_smartctl(device: str, timeout: int = 5) -> dict[str, Any]:
+def _run_smartctl(device: str, timeout: int = 8, is_nvme: bool = False) -> dict[str, Any]:
+    """
+    Ejecuta smartctl con manejo de return code correcto por tipo de dispositivo.
+
+    FIX v1.1 — NVMe return code mask
+    ----------------------------------
+    ATA/SATA: rechaza si bit 0 o bit 1 están seteados (parse error o device open failure).
+    NVMe:     rechaza SOLO si bit 1 está seteado (device open failure).
+              Bit 0 en NVMe = "ATA commands unavailable" — esperado y normal.
+
+    Referencia: smartmontools EXIT STATUS en `man smartctl`, sección ATA vs NVMe.
+    """
     result = subprocess.run(
         ["sudo", "smartctl", "-a", "-j", device],
         capture_output=True, text=True, timeout=timeout,
     )
-    if result.returncode & 0b11:
+    fatal_mask = 0b10 if is_nvme else 0b11
+    if result.returncode & fatal_mask:
         raise RuntimeError(
             f"smartctl rc={result.returncode} para {device!r}. "
             f"stderr: {result.stderr.strip()!r}"
@@ -397,6 +413,96 @@ def _extract_hdd_data(device_path: str, smart: dict) -> StorageData:
 #  RUTA SSD/NVMe — CAPAS ORIGINALES (sin cambios respecto a v1.0)
 # ════════════════════════════════════════════════════════════════════════════
 
+def _nvme_ctrl_from_ns(namespace_path: str) -> str:
+    """
+    Deriva la ruta del controlador NVMe desde el namespace.
+
+    nvme-cli opera sobre el CONTROLADOR (/dev/nvme0), no el NAMESPACE
+    (/dev/nvme0n1). smartctl usa el namespace; nvme-cli usa el controlador.
+
+    /dev/nvme0n1  →  /dev/nvme0
+    /dev/nvme1n2  →  /dev/nvme1
+    /dev/nvme0    →  /dev/nvme0   (ya es controlador, pass-through)
+    """
+    m = re.match(r"(/dev/nvme\d+)(?:n\d+)?$", namespace_path)
+    return m.group(1) if m else namespace_path
+
+
+def _collect_nvme_via_nvme_cli(namespace_path: str) -> dict[str, Any] | None:
+    """
+    Recopila datos SMART NVMe usando nvme-cli como fuente primaria.
+
+    Combina `nvme smart-log` (métricas de salud) y `nvme id-ctrl` (identidad)
+    en un dict normalizado al esquema de smartctl -a -j, para que
+    _parse_health_log() e _parse_identity() lo consuman sin cambios.
+
+    Retorna None si nvme-cli no está instalado (fallback a smartctl).
+
+    Nota sobre temperatura
+    ----------------------
+    nvme-cli < 2.0 reporta temperatura en Kelvin compuesto (ej. 308 = 35°C).
+    nvme-cli >= 2.0 reporta en Celsius directo.
+    Heurística: si valor > 200 → Kelvin, restar 273.
+    """
+    ctrl = _nvme_ctrl_from_ns(namespace_path)
+
+    # --- nvme smart-log ---
+    try:
+        r_smart = subprocess.run(
+            ["sudo", "nvme", "smart-log", ctrl, "-o", "json"],
+            capture_output=True, text=True, timeout=_NVME_CLI_TIMEOUT,
+        )
+        if r_smart.returncode != 0 or not r_smart.stdout.strip():
+            raise RuntimeError(
+                f"nvme smart-log rc={r_smart.returncode} "
+                f"stderr={r_smart.stderr.strip()!r}"
+            )
+        smart_log: dict = json.loads(r_smart.stdout)
+    except FileNotFoundError:
+        return None  # nvme-cli no instalado → señal de fallback a smartctl
+    except Exception as exc:
+        print(f"[disk_reader] WARN nvme smart-log: {exc}")
+        return None
+
+    # --- nvme id-ctrl ---
+    try:
+        r_id = subprocess.run(
+            ["sudo", "nvme", "id-ctrl", ctrl, "-o", "json"],
+            capture_output=True, text=True, timeout=_NVME_CLI_TIMEOUT,
+        )
+        id_ctrl: dict = json.loads(r_id.stdout) if r_id.returncode == 0 else {}
+    except Exception as exc:
+        print(f"[disk_reader] WARN nvme id-ctrl: {exc}")
+        id_ctrl = {}
+
+    # --- Normalización de temperatura ---
+    raw_temp: int = smart_log.get("temperature", 0)
+    temp_c: float = float(raw_temp - 273 if raw_temp > 200 else raw_temp)
+
+    # --- Capacidad: tnvmcap (bytes) es la fuente canónica en id-ctrl ---
+    cap_bytes: int = (
+        id_ctrl.get("tnvmcap", 0)
+        or id_ctrl.get("nsze", 0) * 512   # nsze en bloques de 512B como fallback
+    )
+
+    # --- Dict normalizado al esquema de smartctl -a -j ---
+    return {
+        "model_name":       id_ctrl.get("mn", "N/A").strip(),
+        "firmware_version": id_ctrl.get("fr", "N/A").strip(),
+        "user_capacity":    {"bytes": cap_bytes},
+        "power_on_time":    {"hours": smart_log.get("power_on_hours", 0)},
+        "nvme_smart_health_information_log": {
+            "percentage_used":    smart_log.get("percent_used",       0),
+            "available_spare":    smart_log.get("avail_spare",      100),
+            "media_errors":       smart_log.get("media_errors",       0),
+            "data_units_written": smart_log.get("data_units_written", 0),
+            "data_units_read":    smart_log.get("data_units_read",    0),
+            "temperature":        int(temp_c),
+            "power_on_hours":     smart_log.get("power_on_hours",     0),
+        },
+        "temperature": {"current": int(temp_c)},
+    }
+
 def _parse_health_log(smart: dict) -> dict[str, Any]:
     log = _get(smart, "nvme_smart_health_information_log", default={})
     temp_current = float(
@@ -685,40 +791,49 @@ def extract_disk_data(device_path: str = "/dev/nvme0n1") -> StorageData:
     """
     Extrae datos de almacenamiento bifurcando en HDD o SSD/NVMe.
 
-    Flujo principal
-    ---------------
-    1. smartctl -a -j <device> → obtiene JSON SMART completo.
-    2. _detect_rotational()     → determina el tipo de disco.
-    3a. Si is_hdd=True  → _extract_hdd_data()  (cinemática mecánica).
-    3b. Si is_hdd=False → _extract_ssd_data()  (estado sólido, sin cambios).
-
-    La detección ocurre ANTES de cualquier test de latencia, garantizando
-    que fio nunca ejecuta el test de histograma NVMe sobre un HDD lento.
-
-    Returns
-    -------
-    StorageData
-        Nunca lanza excepciones.
+    Flujo v1.2 — NVMe-aware
+    -----------------------
+    1. Detectar rotación (sysfs rotational).
+    2. Si NVMe:
+       2a. Intentar nvme-cli (fuente primaria, sin problemas de RC).
+       2b. Fallback a smartctl con mask NVMe-correcta (is_nvme=True).
+    3. Si HDD → _extract_hdd_data() (sin cambios).
+    4. Si SSD SATA → _extract_ssd_data() con smartctl estándar.
     """
     try:
-        # ── Capa 1: smartctl ─────────────────────────────────────────────
-        try:
-            smart = _run_smartctl(device_path, timeout=5)
-        except Exception as exc:
-            print(f"[disk_reader] WARN smartctl: {exc}")
-            return StorageData()
-
-        # ── Detección de tipo ─────────────────────────────────────────────
         is_rotational = _detect_rotational(device_path)
+        is_nvme       = Path(device_path).name.startswith("nvme")
 
         if is_rotational:
-            print(f"[disk_reader] INFO {device_path}: HDD mecánico detectado → "
-                  "rama de cinemática mecánica activa.")
+            print(f"[disk_reader] INFO {device_path}: HDD mecánico → rama cinemática.")
+            try:
+                smart = _run_smartctl(device_path, timeout=8, is_nvme=False)
+            except Exception as exc:
+                print(f"[disk_reader] WARN smartctl HDD: {exc}")
+                return StorageData()
             return _extract_hdd_data(device_path, smart)
+
+        if is_nvme:
+            print(f"[disk_reader] INFO {device_path}: NVMe → nvme-cli primario.")
+            # Intento 1: nvme-cli (fuente canónica para NVMe)
+            smart = _collect_nvme_via_nvme_cli(device_path)
+            if smart is None:
+                # Intento 2: smartctl con RC mask correcta para NVMe
+                print(f"[disk_reader] INFO nvme-cli no disponible → smartctl NVMe fallback.")
+                try:
+                    smart = _run_smartctl(device_path, timeout=10, is_nvme=True)
+                except Exception as exc:
+                    print(f"[disk_reader] WARN smartctl NVMe fallback: {exc}")
+                    return StorageData()
         else:
-            print(f"[disk_reader] INFO {device_path}: SSD/NVMe detectado → "
-                  "rama de estado sólido activa.")
-            return _extract_ssd_data(device_path, smart)
+            print(f"[disk_reader] INFO {device_path}: SSD SATA → smartctl estándar.")
+            try:
+                smart = _run_smartctl(device_path, timeout=8, is_nvme=False)
+            except Exception as exc:
+                print(f"[disk_reader] WARN smartctl SATA: {exc}")
+                return StorageData()
+
+        return _extract_ssd_data(device_path, smart)
 
     except Exception as exc:    # pragma: no cover — guardia absoluta
         print(f"[disk_reader] ERROR CRÍTICO en extract_disk_data(): {exc}")

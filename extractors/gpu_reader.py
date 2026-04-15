@@ -392,45 +392,71 @@ def _classify_hotspot(delta: float, t_edge: float, t_hotspot: float) -> str:
 
 def _is_gui_active() -> bool:
     """
-    Determina si hay un servidor gráfico activo en la sesión actual.
+    Determina si hay un compositor gráfico de espacio de usuario activo.
 
-    Política de fallo seguro: ante cualquier ambigüedad o excepción, retorna
-    True (asumir GUI presente). El test destructivo de VRAM solo se activa
-    con certeza de entorno TTY puro — jamás por default o por omisión.
+    FIX v1.1 — Inversión de fail-safe
+    -----------------------------------
+    La implementación anterior retornaba True ante cualquier excepción en pgrep
+    (incluyendo FileNotFoundError en Live ISO minimal). KMS/DRM es kernel-level
+    y NO constituye un servidor gráfico: /dev/dri/card0 puede existir en una
+    TTY1 pura con modesetting activo.
 
-    Capas de detección (orden creciente de coste)
-    ─────────────────────────────────────────────
-    1. Variables de entorno del display server — O(1), sin syscall de proceso.
-    2. XDG_SESSION_TYPE — discrimina sesiones gráficas de TTY/SSH/container.
-    3. pgrep -f — un único proceso hijo contra el patrón de compositors.
+    Contrato nuevo:
+    - Retorna True  SOLO si un compositor Wayland o X11 es confirmado positivamente.
+    - Retorna False por defecto (TTY confirmada).
+    - NO depende de pgrep (ausente en Arch minimal).
+    - NO interpreta KMS/DRM como entorno gráfico.
 
-    Returns
-    -------
-    True  → GUI activa o estado indeterminado. Test destructivo prohibido.
-    False → TTY pura confirmada. Estrés de VRAM habilitado.
+    Capas de detección (todas deben fallar para concluir TTY):
+    1. Variables de entorno del compositor — O(1), cero syscalls de proceso.
+    2. XDG_SESSION_TYPE explícito.
+    3. Escaneo de /proc/<pid>/cmdline — sin dependencia de pgrep.
     """
-    # Capa 1: variables del display server (Wayland y X11)
-    if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"):
+    # ── Capa 1: Variables del display server ─────────────────────────────
+    # Estas variables SOLO son seteadas por el compositor durante su arranque.
+    # KMS/DRM nunca las setea. Son la fuente de verdad más confiable.
+    if os.environ.get("WAYLAND_DISPLAY", "").strip():
+        return True
+    if os.environ.get("DISPLAY", "").strip():
         return True
 
-    # Capa 2: tipo de sesión XDG
-    if os.environ.get("XDG_SESSION_TYPE", "").lower().strip() in ("x11", "wayland", "mir"):
+    # ── Capa 2: Tipo de sesión XDG ───────────────────────────────────────
+    # "tty" y "" significan sin GUI. Solo "x11"/"wayland"/"mir" indican GUI.
+    xdg_type = os.environ.get("XDG_SESSION_TYPE", "").lower().strip()
+    if xdg_type in ("x11", "wayland", "mir"):
         return True
 
-    # Capa 3: búsqueda de proceso compositor vía pgrep -f (ERE, un solo fork)
+    # ── Capa 3: Escaneo directo de /proc — sin pgrep ─────────────────────
+    # Se leen bytes crudos de /proc/<pid>/cmdline y se compara solo el basename
+    # de argv[0] contra una lista de compositores conocidos.
+    # Ventaja: funciona en cualquier Live ISO que tenga procfs montado.
+    _COMPOSITOR_BASENAMES: frozenset[bytes] = frozenset({
+        b"Xorg", b"Xwayland", b"Xvfb",
+        b"sway", b"kwin_wayland", b"kwin_x11",
+        b"mutter", b"gnome-shell", b"plasmashell",
+        b"weston", b"hyprland", b"niri", b"river",
+        b"openbox", b"labwc", b"wayfire",
+    })
     try:
-        r = subprocess.run(
-            ["pgrep", "-f", _GUI_PROCESS_PATTERN],
-            capture_output=True,
-            timeout=3,
-        )
-        # rc=0 → proceso encontrado → GUI activa
-        # rc=1 → no encontrado    → TTY pura
-        return r.returncode == 0
-    except FileNotFoundError:
-        return True   # pgrep no disponible → fallo seguro
-    except Exception:
-        return True   # Cualquier error inesperado → fallo seguro
+        for pid_dir in Path("/proc").iterdir():
+            if not pid_dir.name.isdigit():
+                continue
+            try:
+                raw = (pid_dir / "cmdline").read_bytes()
+                if not raw:
+                    continue
+                # argv[0] termina en el primer byte nulo
+                argv0    = raw.split(b"\x00", 1)[0]
+                basename = argv0.rsplit(b"/", 1)[-1]
+                if basename in _COMPOSITOR_BASENAMES:
+                    return True
+            except (PermissionError, FileNotFoundError, ProcessLookupError):
+                continue  # Proceso terminó durante el escaneo; ignorar
+    except (PermissionError, FileNotFoundError):
+        # /proc no disponible en este entorno — asumir TTY (correcto y conservador)
+        pass
+
+    return False  # TTY bare metal confirmada
 
 
 def _parse_gpu_memtest_errors(output: str) -> int:
@@ -536,8 +562,8 @@ def _run_vram_stress_test(
         except Exception as exc:
             print(f"[gpu_reader] WARN cuda-memtest: {exc}")
 
-    # ── Intel iGPU (i915 / Xe) → proxy memtester sobre DRAM compartido ───
-    if "i915" in d or "xe" in d:
+    # ── Intel iGPU (i915 / Xe) y AMD APUs → proxy memtester sobre DRAM compartido ───
+    if "i915" in d or "xe" in d or "amdgpu" in d:
         test_mb = min(max(vram_total_gb * 1024, 256), 1024)
         try:
             r = subprocess.run(
@@ -549,11 +575,11 @@ def _run_vram_stress_test(
             tested_gb = max(test_mb // 1024, 1)
             return failures, 0, 0, tested_gb, True
         except FileNotFoundError:
-            print("[gpu_reader] INFO memtester no disponible para proxy iGPU Intel.")
+            print("[gpu_reader] INFO memtester no disponible para proxy iGPU/APU.")
         except subprocess.TimeoutExpired:
-            print(f"[gpu_reader] WARN memtester iGPU superó {_VRAM_TEST_TIMEOUT_S} s.")
+            print(f"[gpu_reader] WARN memtester iGPU/APU superó {_VRAM_TEST_TIMEOUT_S} s.")
         except Exception as exc:
-            print(f"[gpu_reader] WARN memtester iGPU: {exc}")
+            print(f"[gpu_reader] WARN memtester iGPU/APU: {exc}")
 
     return 0, 0, 0, 0, False
 
