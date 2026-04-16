@@ -946,6 +946,17 @@ rsync -a --delete "${EXCLUDES[@]}" \
 
 ok "Repositorio sincronizado en airootfs/root/probe.tex/"
 
+log "Inyectando _ISO_BUILD_TIMESTAMP (Time Trap) en license_verifier.py..."
+BUILD_DATE=$(date -u +%s)
+VERIFIER_FILE="${ISO_ROOT}/airootfs/root/probe.tex/core/license_verifier.py"
+if [[ -f "${VERIFIER_FILE}" ]]; then
+    # Conservamos el type hint (Final[int]) usando una expresión regular fuerte
+    sed -i "s/^_ISO_BUILD_TIMESTAMP:.*=.*$/_ISO_BUILD_TIMESTAMP: Final[int] = ${BUILD_DATE}  # FORGE_PATCH_BUILD_TIMESTAMP/" "${VERIFIER_FILE}"
+    ok "_ISO_BUILD_TIMESTAMP inyectado: ${BUILD_DATE} (UTC Unix)"
+else
+    warn "${VERIFIER_FILE} no encontrado. No se aplicó el Time Trap."
+fi
+
 # ════════════════════════════════════════════════════════════
 #  9. CACHÉ DE TECTONIC
 # ════════════════════════════════════════════════════════════
@@ -1220,6 +1231,8 @@ echo -e "    ${GRN}FIX-15${RST} Silent Boot — systemd-firstboot suprimido (3 c
 echo -e "           ${DIM}/etc/localtime → America/Argentina/Buenos_Aires${RST}"
 echo -e "           ${DIM}/etc/machine-id estático; firstboot.service mascado.${RST}"
 echo -e "           ${DIM}Kernel param systemd.firstboot=0 en entradas de boot.${RST}"
+echo -e "    ${GRN}SEC-1${RST}  Time Trap inyectado en core/license_verifier.py."
+echo -e "           ${DIM}_ISO_BUILD_TIMESTAMP establecido a la fecha de este build.${RST}"
 echo -e "    ${GRN}AUD-1${RST}  profiledef.sh: bootmodes GRUB → systemd-boot."
 echo -e "    ${GRN}AUD-2${RST}  getty@tty1: máscara /dev/null."
 echo -e "    ${GRN}AUD-3${RST}  pacman.conf copiado desde /etc/pacman.conf."

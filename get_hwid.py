@@ -1,0 +1,2 @@
+from core.license_verifier import compute_hardware_fingerprint
+print(compute_hardware_fingerprint())

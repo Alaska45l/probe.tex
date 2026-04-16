@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sys
 import time
 import platform
 import subprocess
@@ -14,6 +15,7 @@ from core.models import (
     StorageData, NVMeData, RAMData, MotherboardData, USBData, BatteryData
 )
 from core.entropy import evaluate_system_entropy
+from core.license_verifier import verify_license, LicenseError
 from extractors.cpu_reader import extract_cpu_data
 from extractors.disk_reader import extract_disk_data
 from extractors.motherboard_reader import extract_motherboard_data
@@ -318,7 +320,23 @@ def render_pdf(outdir: Path | None = None) -> None:
         # Si Tectonic falla (ej. sin WiFi en Live OS), rompemos la sonda con el log
         raise RuntimeError(f"Tectonic falló la compilación:\n{e.stderr}")
 
+def renderizar_pantalla_roja_bloqueo(code: str) -> None:
+    """Muestra una pantalla roja de error y detiene la ejecución (Lockdown Brutalista)."""
+    print(f"\n\033[1;41;97m{' ' * 80}\033[0m")
+    print(f"\033[1;41;97m{' ' * 20}[!] SISTEMA BLOQUEADO - ERROR DE LICENCIA{' ' * 19}\033[0m")
+    print(f"\033[1;41;97m{' ' * 20}CÓDIGO: {code:<42}\033[0m")
+    print(f"\033[1;41;97m{' ' * 80}\033[0m\n")
+    sys.exit(1)  # Alternativa más agresiva: os.system("poweroff -f")
+
 if __name__ == "__main__":
+    try:
+        # 1. El Guardián en la puerta
+        licencia = verify_license()
+    except LicenseError as e:
+        # 2. Lockdown Brutalista
+        renderizar_pantalla_roja_bloqueo(e.code)
+
+    # 3. Flujo normal: el sistema está desbloqueado
     parser = argparse.ArgumentParser(
         prog="probe.tex",
         description="INVARIANT — Hardware Forensic Diagnostic",
