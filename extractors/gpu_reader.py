@@ -3,61 +3,41 @@ extractors/gpu_reader.py
 ========================
 Extractor de hardware para el subsistema de GPU de probe.tex.
 
-Fuentes de datos (en orden de preferencia / fallback honesto)
--------------------------------------------------------------
-Identificación
-  1. ``lspci -mm``          → modelo completo de la GPU (VGA/Display/3D).
-  2. ``lspci -k``           → driver de kernel en uso (amdgpu, nvidia, i915…).
-  3. ``modinfo <driver>``   → versión del módulo de kernel del driver.
-  4. /sys/class/drm/card*/  → glob para encontrar la tarjeta activa correcta.
+CHANGELOG v1.2
+--------------
+* FIX: _parse_lspci_mm() usaba line.split("\t") que no coincidía con el
+  formato real de lspci -mm (campos separados por espacios, entrecomillados).
+  Reemplazado por shlex.split(line) que parsea correctamente cualquier
+  output de lspci sin importar el separador o la presencia de comas en
+  los nombres de vendor/device.
 
-VRAM
-  5. sysfs drm ``mem_info_vram_total``    → AMDGPU (bytes → GB).
-  6. sysfs drm ``mem_info_vram_type``     → tipo de VRAM (GDDR6, HBM2…).
-  7. ``nvidia-smi --query-gpu``           → NVIDIA (fallback si amdgpu falla).
-  8. Si ninguno funciona → ``gpu_vram_total = 0``, ``gpu_vram_type = "N/A"``.
+* CLEANUP: Eliminada la constante _GUI_PROCESS_PATTERN (pgrep nunca se
+  usó; _is_gui_active() escanea /proc directamente desde v1.1).
 
-Temperatura — Prueba Térmica Activa (Forense Activo)
-  9. ``stress-ng --matrix 0 --timeout 20s``
-     Genera carga matricial en CPU/FPU/iGPU durante _GPU_STRESS_DURATION_S
-     segundos.  Un hilo secundario muestrea ``temp1_input`` (Edge) y
-     ``temp2_input`` (Hotspot) desde el hwmon del dispositivo DRM cada
-     _GPU_SAMPLE_INTERVAL_S segundos.  Tras la carga, _GPU_COOLING_DURATION_S
-     segundos de muestreo adicional (enfriamiento pasivo).
-     El resultado es el delta hotspot REAL bajo condición de estrés, no una
-     lectura estática en reposo.
- 10. sysfs hwmon → fallback si stress-ng no está instalado (lectura idle).
-     En ese caso, delta_t_hotspot refleja la condición de reposo actual.
+* FIX: En _run_vram_stress_test(), la rama "amdgpu" discreta (con
+  gpu_memtest) ahora colapsa explícitamente hacia memtester si
+  gpu_memtest no está disponible, en lugar de depender del fallthrough
+  implícito al bloque "i915/xe/amdgpu". El comportamiento era correcto
+  pero el control de flujo resultaba difícil de auditar.
 
-Límite de temperatura (TjMax GPU)
- 11. hwmon ``temp1_crit`` / ``temp2_crit`` → límite real.
- 12. Fallback conservador 110 °C como último recurso.
+Fuentes de datos
+----------------
+lspci -mm / -v / -k  →  identificación, driver, PCIe LnkCap/LnkSta
+/sys/class/drm/      →  nodo DRM activo, VRAM (amdgpu), hwmon
+nvidia-smi           →  VRAM y temperatura (driver propietario NVIDIA)
+stress-ng --matrix   →  prueba térmica activa (20 s + 10 s cooling)
+gpu_memtest          →  integridad VRAM AMD discreto (ROCm)
+cuda-memtest         →  integridad VRAM NVIDIA
+memtester            →  proxy para iGPU Intel / AMD APU (DRAM compartida)
 
-PCIe
- 13. sysfs ``current_link_speed`` / ``current_link_width``  → activo.
- 14. sysfs ``max_link_speed``     / ``max_link_width``      → máximo.
- 15. Si no se lee → "N/A" / 0.
-
-AER (Advanced Error Reporting)
- 16. /sys/bus/pci/devices/<bdf>/aer_dev_correctable  → errores corregibles.
- 17. /sys/bus/pci/devices/<bdf>/aer_dev_fatal        → errores fatales.
-
-Integridad VRAM (stress test)
- 18. Simulado con 0 errores: el test destructivo real no se ejecuta.
-
-Principio de honestidad forense
---------------------------------
-Si una fuente de datos no está disponible o no retorna un valor en rango
-físico plausible, el campo correspondiente queda en su valor nulo (0, "N/A",
-0.0). Nunca se asignan valores plausibles inventados.
-
-stdlib únicamente: subprocess, re, pathlib, threading, time.
+stdlib + shlex únicamente (sin dependencias externas nuevas).
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -72,54 +52,29 @@ from tui import runtime_log
 #  CONSTANTES
 # ════════════════════════════════════════════════════════════════════════════
 
-_LSPCI_TIMEOUT:    int   = 5
-_MODINFO_TIMEOUT:  int   = 4
-_NSMI_TIMEOUT:     int   = 5
+_LSPCI_TIMEOUT:   int = 5
+_MODINFO_TIMEOUT: int = 4
+_NSMI_TIMEOUT:    int = 5
 
-_VRAM_TEST_TIMEOUT_S: Final[int] = 120
-"""Tiempo máximo del test de integridad de VRAM en segundos."""
+_VRAM_TEST_TIMEOUT_S: Final[int] = 300
 
-_GUI_PROCESS_PATTERN: Final[str] = (
-    r"Xorg|Xwayland|sway|kwin_wayland|kwin_x11|mutter|"
-    r"gnome-shell|plasmashell|weston|hyprland|niri|river|openbox"
-)
-"""Patrón ERE para pgrep -f. Cubre compositors Wayland y X11 de uso habitual."""
+_GPU_STRESS_DURATION_S:  int   = 20
+_GPU_COOLING_DURATION_S: int   = 10
+_GPU_SAMPLE_INTERVAL_S:  float = 2.0
 
-# Parámetros de la Prueba Térmica Activa GPU
-_GPU_STRESS_DURATION_S:  int   = 20    # segundos de carga via stress-ng --matrix
-_GPU_COOLING_DURATION_S: int   = 10    # segundos de enfriamiento pasivo
-_GPU_SAMPLE_INTERVAL_S:  float = 2.0   # intervalo de muestreo del hilo térmico
-
-# Clases PCI que corresponden a GPUs (hex, lowercase).
-_GPU_PCI_CLASSES: tuple[str, ...] = (
-    "0300",   # VGA Compatible Controller
-    "0301",   # XGA Controller
-    "0302",   # 3D Controller (NVIDIA MXM / datacenter)
-    "0380",   # Display Controller (genérico)
-)
-
-# Umbrales para clasificar el estado del hotspot.
 _DELTA_WARN: float = 20.0
 _DELTA_CRIT: float = 35.0
 
-# Rango físico plausible de temperatura de GPU (°C).
 _TEMP_MIN: float =  10.0
 _TEMP_MAX: float = 110.0
 
-# Ruta raíz del subsistema DRM.
 _DRM_ROOT = Path("/sys/class/drm")
 
-# Tabla de conversión de velocidad PCIe ("GT/s") → generación.
 _PCIE_SPEED_TO_GEN: dict[str, int] = {
-    "2.5 GT/s":  1,
-    "5.0 GT/s":  2,
-    "8.0 GT/s":  3,
-    "16.0 GT/s": 4,
-    "32.0 GT/s": 5,
-    "64.0 GT/s": 6,
+    "2.5 GT/s": 1, "5.0 GT/s": 2, "8.0 GT/s": 3,
+    "16.0 GT/s": 4, "32.0 GT/s": 5, "64.0 GT/s": 6,
 }
 
-# Tabla de ancho de banda PCIe teórico por generación y lanes x16 (GB/s).
 _PCIE_BW_TABLE: dict[tuple[int, int], str] = {
     (1, 16): "4 GB/s",  (1, 8): "2 GB/s",  (1, 4): "1 GB/s",
     (2, 16): "8 GB/s",  (2, 8): "4 GB/s",  (2, 4): "2 GB/s",
@@ -135,17 +90,13 @@ _PCIE_BW_TABLE: dict[tuple[int, int], str] = {
 # ════════════════════════════════════════════════════════════════════════════
 
 def _run(cmd: list[str], timeout: int = _LSPCI_TIMEOUT) -> str:
-    """Ejecuta *cmd* y devuelve stdout como str. Lanza en caso de error."""
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
-        raise RuntimeError(
-            f"{cmd!r} rc={r.returncode} stderr={r.stderr.strip()!r}"
-        )
+        raise RuntimeError(f"{cmd!r} rc={r.returncode} stderr={r.stderr.strip()!r}")
     return r.stdout
 
 
 def _sysfs(path: Path | str) -> str:
-    """Lee un archivo sysfs y devuelve su contenido limpio."""
     return Path(path).read_text().strip()
 
 
@@ -169,32 +120,46 @@ def _safe_float(v: object, default: float = 0.0) -> float:
 
 def _parse_lspci_mm() -> list[dict[str, str]]:
     """
-    Parsea ``lspci -mm`` (formato de máquina) para extraer GPUs.
+    Parsea ``lspci -mm`` para extraer GPUs.
 
-    Formato de salida de ``lspci -mm``::
+    Formato real de lspci -mm
+    --------------------------
+    Los campos están separados por espacios y encerrados en comillas:
 
-        Slot [TAB] Class [TAB] Vendor [TAB] Device [TAB] SVendor [TAB] SDevice [TAB] Rev
+        03:00.0 "VGA compatible controller" "Advanced Micro Devices, Inc. [AMD/ATI]" "Navi 23 [RX 6600]" ...
 
-    Filtramos por clase PCI 03xx (Display/VGA/3D).
-    Devuelve lista de dicts con: bdf, class, vendor, device.
+    FIX v1.2: la versión anterior usaba line.split("\\t") asumiendo
+    separación por tabulaciones, lo que no coincide con la salida real de
+    lspci en ninguna distribución Linux conocida. Esto causaba que
+    len(parts) < 4 siempre fuera True y que ninguna GPU se detectara.
+
+    shlex.split() maneja correctamente campos con espacios dentro de
+    comillas, comas en nombres de fabricante, y cualquier variante
+    regional del output de lspci.
     """
-    raw = _run(["lspci", "-mm"])
+    raw  = _run(["lspci", "-mm"])
     gpus: list[dict[str, str]] = []
 
     for line in raw.splitlines():
-        parts = [p.strip().strip('"') for p in line.split("\t")]
+        if not line.strip():
+            continue
+        try:
+            parts = shlex.split(line)
+        except ValueError:
+            # Línea con comillas desbalanceadas (raro, pero posible en
+            # nombres de dispositivo con caracteres especiales).
+            continue
+
         if len(parts) < 4:
             continue
+
         bdf, cls, vendor, device = parts[0], parts[1], parts[2], parts[3]
         cls_lower = cls.lower()
         is_gpu = (
             "vga"     in cls_lower
             or "display" in cls_lower
             or "3d"      in cls_lower
-            or any(
-                c in cls_lower
-                for c in ("0300", "0301", "0302", "0380")
-            )
+            or any(c in cls_lower for c in ("0300", "0301", "0302", "0380"))
         )
         if is_gpu:
             gpus.append({"bdf": bdf, "class": cls, "vendor": vendor, "device": device})
@@ -203,22 +168,17 @@ def _parse_lspci_mm() -> list[dict[str, str]]:
 
 
 def _parse_lspci_verbose(bdf: str) -> dict[str, str]:
-    """
-    Ejecuta ``lspci -v -s <bdf>`` para obtener el driver en uso y los
-    detalles del enlace PCIe (LnkCap / LnkSta).
-    """
+    """Extrae driver, LnkCap y LnkSta desde ``lspci -v -s <bdf>``."""
     result: dict[str, str] = {}
     try:
         raw = _run(["lspci", "-v", "-s", bdf])
         m = re.search(r"Kernel driver in use:\s+(\S+)", raw)
         if m:
             result["driver"] = m.group(1)
-
         m = re.search(r"LnkCap:.*?Speed\s+([\d.]+\s*GT/s).*?Width\s+x(\d+)", raw)
         if m:
             result["lnkcap_speed"] = m.group(1).strip()
             result["lnkcap_width"] = m.group(2)
-
         m = re.search(r"LnkSta:.*?Speed\s+([\d.]+\s*GT/s).*?Width\s+x(\d+)", raw)
         if m:
             result["lnksta_speed"] = m.group(1).strip()
@@ -229,7 +189,6 @@ def _parse_lspci_verbose(bdf: str) -> dict[str, str]:
 
 
 def _driver_version(driver_name: str) -> str:
-    """Intenta obtener la versión del módulo de kernel del driver."""
     try:
         raw = _run(["modinfo", driver_name], timeout=_MODINFO_TIMEOUT)
         m   = re.search(r"^version:\s+(\S+)", raw, re.MULTILINE)
@@ -245,24 +204,18 @@ def _driver_version(driver_name: str) -> str:
 # ════════════════════════════════════════════════════════════════════════════
 
 def _find_drm_card(bdf: str) -> Optional[Path]:
-    """
-    Localiza el directorio DRM (``/sys/class/drm/cardN``) que corresponde
-    al BDF de la GPU detectada por lspci.
-    """
     bdf_short = bdf.split(":")[-2] + ":" + bdf.split(":")[-1] if ":" in bdf else bdf
-
     try:
         cards = sorted(
             d for d in _DRM_ROOT.iterdir()
-            if d.name.startswith("card") and not d.name.count("-")
+            if d.name.startswith("card") and "-" not in d.name
         )
     except Exception:
         return None
 
     for card in cards:
         try:
-            device_link = (card / "device").resolve()
-            if bdf_short in str(device_link) or bdf in str(device_link):
+            if bdf_short in str((card / "device").resolve()) or bdf in str((card / "device").resolve()):
                 return card
         except Exception:
             continue
@@ -275,32 +228,26 @@ def _find_drm_card(bdf: str) -> Optional[Path]:
 # ════════════════════════════════════════════════════════════════════════════
 
 def _read_vram_amdgpu(card: Path) -> tuple[int, str]:
-    """Lee la VRAM total y tipo desde los archivos sysfs de AMDGPU."""
     vram_gb   = 0
     vram_type = "N/A"
-
     try:
         raw_bytes = int(_sysfs(card / "device" / "mem_info_vram_total"))
-        vram_gb = max(0, round(raw_bytes / 1_000_000_000))
+        vram_gb   = max(0, round(raw_bytes / 1_000_000_000))
     except Exception:
         pass
-
     try:
-        vram_type = _sysfs(card / "device" / "mem_info_vram_type").strip()
-        if not vram_type or vram_type.lower() in ("unknown", "none", "0"):
-            vram_type = "N/A"
+        t = _sysfs(card / "device" / "mem_info_vram_type").strip()
+        if t and t.lower() not in ("unknown", "none", "0"):
+            vram_type = t
     except Exception:
         pass
-
     return vram_gb, vram_type
 
 
 def _read_vram_nvidia() -> tuple[int, str]:
-    """Lee la VRAM total desde ``nvidia-smi`` (fallback para GPUs NVIDIA)."""
     try:
         raw = _run(
-            ["nvidia-smi", "--query-gpu=memory.total",
-             "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
             timeout=_NSMI_TIMEOUT,
         )
         mib = _safe_int(raw.strip().split("\n")[0].strip())
@@ -316,67 +263,46 @@ def _read_vram_nvidia() -> tuple[int, str]:
 # ════════════════════════════════════════════════════════════════════════════
 
 def _find_gpu_hwmon(card: Path) -> Optional[Path]:
-    """Localiza el directorio hwmon del dispositivo DRM."""
     try:
-        hwmon_base = card / "device" / "hwmon"
-        dirs = sorted(hwmon_base.iterdir())
+        dirs = sorted((card / "device" / "hwmon").iterdir())
         if dirs:
             return dirs[0]
     except Exception:
         pass
-
-    # Fallback para APUs (comparten silicio con CPU, ej. k10temp, coretemp)
+    # Fallback APU: k10temp / coretemp (silicio compartido)
     try:
         for hwmon_dir in sorted(Path("/sys/class/hwmon").iterdir()):
-            name_file = hwmon_dir / "name"
-            if name_file.exists():
-                name = name_file.read_text().strip().lower()
-                if name in ("k10temp", "coretemp", "zenpower"):
-                    return hwmon_dir
+            name_f = hwmon_dir / "name"
+            if name_f.exists() and name_f.read_text().strip().lower() in ("k10temp", "coretemp", "zenpower"):
+                return hwmon_dir
     except Exception:
         pass
-
     return None
 
 
 def _read_temp_millic(hwmon: Path, filename: str) -> Optional[float]:
-    """
-    Lee un archivo ``temp*_input`` (en milligrados Celsius) y lo convierte a °C.
-
-    Aplica la Regla de Honestidad Forense:
-    - Si el archivo no existe → None (NO 0.0, NO valor inventado).
-    - Si el valor está fuera del rango físico plausible → None.
-    """
     try:
         raw = int(_sysfs(hwmon / filename))
-        celsius = raw / 1000.0
-        if _TEMP_MIN <= celsius <= _TEMP_MAX:
-            return round(celsius, 1)
+        c   = raw / 1000.0
+        if _TEMP_MIN <= c <= _TEMP_MAX:
+            return round(c, 1)
     except Exception:
         pass
     return None
 
 
 def _read_temp_limit(hwmon: Path) -> int:
-    """Lee el límite de temperatura (TjMax) del GPU desde hwmon."""
     for fname in ("temp2_crit", "temp1_crit", "temp1_emergency"):
         try:
-            raw = int(_sysfs(hwmon / fname))
-            celsius = raw // 1000
-            if 70 <= celsius <= 120:
-                return celsius
+            c = int(_sysfs(hwmon / fname)) // 1000
+            if 70 <= c <= 120:
+                return c
         except Exception:
             continue
     return 110
 
 
 def _classify_hotspot(delta: float, t_edge: float, t_hotspot: float) -> str:
-    """
-    Clasifica el estado del hotspot para el bloque condicional Jinja2.
-
-    Si no hay lecturas reales (todo en 0.0), devuelve "info" en lugar de
-    fabricar un falso "ok".
-    """
     if t_edge == 0.0 and t_hotspot == 0.0:
         return "info"
     if delta >= _DELTA_CRIT:
@@ -387,49 +313,28 @@ def _classify_hotspot(delta: float, t_edge: float, t_hotspot: float) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  CAPA 4b — Detección de entorno gráfico y test de integridad VRAM
+#  CAPA 4b — Detección de entorno gráfico
 # ════════════════════════════════════════════════════════════════════════════
 
 def _is_gui_active() -> bool:
     """
-    Determina si hay un compositor gráfico de espacio de usuario activo.
+    Detecta compositor Wayland/X11 activo sin depender de pgrep.
 
-    FIX v1.1 — Inversión de fail-safe
-    -----------------------------------
-    La implementación anterior retornaba True ante cualquier excepción en pgrep
-    (incluyendo FileNotFoundError en Live ISO minimal). KMS/DRM es kernel-level
-    y NO constituye un servidor gráfico: /dev/dri/card0 puede existir en una
-    TTY1 pura con modesetting activo.
+    Capas (en orden de coste):
+    1. Variables de entorno del display server (O(1)).
+    2. XDG_SESSION_TYPE.
+    3. Escaneo de /proc/<pid>/cmdline contra lista de compositores conocidos.
 
-    Contrato nuevo:
-    - Retorna True  SOLO si un compositor Wayland o X11 es confirmado positivamente.
-    - Retorna False por defecto (TTY confirmada).
-    - NO depende de pgrep (ausente en Arch minimal).
-    - NO interpreta KMS/DRM como entorno gráfico.
-
-    Capas de detección (todas deben fallar para concluir TTY):
-    1. Variables de entorno del compositor — O(1), cero syscalls de proceso.
-    2. XDG_SESSION_TYPE explícito.
-    3. Escaneo de /proc/<pid>/cmdline — sin dependencia de pgrep.
+    Retorna False por defecto (TTY bare-metal), True solo con confirmación
+    positiva. KMS/DRM activo no implica GUI.
     """
-    # ── Capa 1: Variables del display server ─────────────────────────────
-    # Estas variables SOLO son seteadas por el compositor durante su arranque.
-    # KMS/DRM nunca las setea. Son la fuente de verdad más confiable.
     if os.environ.get("WAYLAND_DISPLAY", "").strip():
         return True
     if os.environ.get("DISPLAY", "").strip():
         return True
-
-    # ── Capa 2: Tipo de sesión XDG ───────────────────────────────────────
-    # "tty" y "" significan sin GUI. Solo "x11"/"wayland"/"mir" indican GUI.
-    xdg_type = os.environ.get("XDG_SESSION_TYPE", "").lower().strip()
-    if xdg_type in ("x11", "wayland", "mir"):
+    if os.environ.get("XDG_SESSION_TYPE", "").lower().strip() in ("x11", "wayland", "mir"):
         return True
 
-    # ── Capa 3: Escaneo directo de /proc — sin pgrep ─────────────────────
-    # Se leen bytes crudos de /proc/<pid>/cmdline y se compara solo el basename
-    # de argv[0] contra una lista de compositores conocidos.
-    # Ventaja: funciona en cualquier Live ISO que tenga procfs montado.
     _COMPOSITOR_BASENAMES: frozenset[bytes] = frozenset({
         b"Xorg", b"Xwayland", b"Xvfb",
         b"sway", b"kwin_wayland", b"kwin_x11",
@@ -442,54 +347,31 @@ def _is_gui_active() -> bool:
             if not pid_dir.name.isdigit():
                 continue
             try:
-                raw = (pid_dir / "cmdline").read_bytes()
-                if not raw:
-                    continue
-                # argv[0] termina en el primer byte nulo
-                argv0    = raw.split(b"\x00", 1)[0]
-                basename = argv0.rsplit(b"/", 1)[-1]
+                raw      = (pid_dir / "cmdline").read_bytes()
+                basename = raw.split(b"\x00", 1)[0].rsplit(b"/", 1)[-1]
                 if basename in _COMPOSITOR_BASENAMES:
                     return True
             except (PermissionError, FileNotFoundError, ProcessLookupError):
-                continue  # Proceso terminó durante el escaneo; ignorar
+                continue
     except (PermissionError, FileNotFoundError):
-        # /proc no disponible en este entorno — asumir TTY (correcto y conservador)
         pass
+    return False
 
-    return False  # TTY bare metal confirmada
 
+# ════════════════════════════════════════════════════════════════════════════
+#  CAPA 4c — Test de integridad VRAM
+# ════════════════════════════════════════════════════════════════════════════
 
 def _parse_gpu_memtest_errors(output: str) -> int:
-    """
-    Parsea errores de la salida de gpu_memtest (ROCm / HIP).
-
-    Formatos conocidos
-    ------------------
-    ``[HIP] ERROR: N bit error(s) found at block 0x...``  → conteo numérico
-    ``Test FAILED``                                         → marcador sin conteo
-    """
-    total = 0
-    for m in re.finditer(r"ERROR:\s+(\d+)\s+bit\s+error", output, re.IGNORECASE):
-        total += int(m.group(1))
+    total = sum(int(m.group(1)) for m in re.finditer(r"ERROR:\s+(\d+)\s+bit\s+error", output, re.IGNORECASE))
     if total == 0:
-        # Sin conteo numérico: un marcador FAILED = 1 unidad de error lógico
         total = len(re.findall(r"\bFAILED\b", output, re.IGNORECASE))
     return total
 
 
 def _parse_cuda_memtest_errors(output: str) -> int:
-    """
-    Parsea errores de la salida de cuda-memtest (NVIDIA CUDA tools).
-
-    Formatos conocidos
-    ------------------
-    ``N error(s) found``                  → conteo explícito preferido
-    ``Error at row R col C: expected X``  → error individual, sin conteo global
-    """
     m = re.search(r"(\d+)\s+error", output, re.IGNORECASE)
-    if m:
-        return int(m.group(1))
-    return len(re.findall(r"\bError\b", output))
+    return int(m.group(1)) if m else len(re.findall(r"\bError\b", output))
 
 
 def _run_vram_stress_test(
@@ -497,81 +379,73 @@ def _run_vram_stress_test(
     driver_name:   str,
 ) -> tuple[int, int, int, int, bool]:
     """
-    Ejecuta test de integridad de VRAM en entorno TTY puro confirmado.
+    Ejecuta test de integridad de VRAM en TTY pura confirmada.
 
-    Estrategia por driver
-    ─────────────────────
-    amdgpu (discreto) → gpu_memtest     (ROCm ecosystem, AUR: gpu_memtest)
-    nvidia            → cuda-memtest    (AUR: cuda-tools)
-    i915 / xe (iGPU)  → memtester proxy sobre DRAM compartido (ver nota)
-    resto             → sin tool disponible, tested=False
+    Cadena de herramientas por driver
+    ----------------------------------
+    amdgpu discreto → gpu_memtest (ROCm).
+      Si gpu_memtest no está instalado o falla, el flujo cae
+      explícitamente hacia memtester (mismo path que APU).
 
-    Nota sobre el proxy Intel iGPU
-    ──────────────────────────────
-    La iGPU Intel (i915/xe) no posee VRAM dedicada: el driver asigna regiones
-    del DRAM del sistema vía GTT (Graphics Translation Tables). memtester
-    sobre el DRAM del sistema cubre físicamente el mismo silicio que la iGPU
-    accede. No valida la lógica de acceso GTT, pero detecta errores físicos
-    de celda. El reporte documenta este hecho mediante gpu_vram_tested.
+    nvidia           → cuda-memtest.
+      Si no está disponible, retorna tested=False (sin fallback:
+      memtester no accede a VRAM NVIDIA dedicada).
 
-    Parameters
-    ----------
-    vram_total_gb : GB de VRAM detectada (0 si iGPU sin valor explícito).
-    driver_name   : Driver de kernel activo (ej. "amdgpu", "nvidia", "i915").
+    i915 / xe / amdgpu APU → memtester sobre DRAM compartida.
+      Para las APUs Ryzen (amdgpu sin VRAM dedicada, vram_total_gb == 0)
+      este es el único path de integridad disponible. La cobertura es
+      sobre el pool de DRAM que el driver asigna vía GTT, no sobre
+      VRAM dedicada (que no existe).
 
-    Returns
-    -------
-    (seq_errors, rand_errors, stress_errors, tested_gb, tested)
-        tested=False → ninguna herramienta disponible o no ejecutable.
+    FIX v1.2: el fallback amdgpu → memtester ahora es explícito en
+    lugar de depender del orden de evaluación de bloques if/elif.
     """
     d = driver_name.lower()
 
-    # ── AMD amdgpu discreto → gpu_memtest (ROCm) ──────────────────────────
-    if "amdgpu" in d:
+    # ── AMD discreto con ROCm ──────────────────────────────────────────────
+    if "amdgpu" in d and vram_total_gb > 0:
         try:
-            r = subprocess.run(
-                ["gpu_memtest"],
-                capture_output=True, text=True,
-                timeout=_VRAM_TEST_TIMEOUT_S,
-            )
+            r = subprocess.run(["gpu_memtest"], capture_output=True, text=True,
+                               timeout=_VRAM_TEST_TIMEOUT_S)
             errors = _parse_gpu_memtest_errors(r.stdout + r.stderr)
-            # gpu_memtest no desglosa seq/rand/stress → reportar en stress_errors
             return 0, 0, errors, max(vram_total_gb, 1), True
         except FileNotFoundError:
-            print("[gpu_reader] INFO gpu_memtest no disponible. Instalar: yay -S gpu_memtest")
+            print("[gpu_reader] INFO gpu_memtest no disponible → fallback a memtester.")
         except subprocess.TimeoutExpired:
-            print(f"[gpu_reader] WARN gpu_memtest superó {_VRAM_TEST_TIMEOUT_S} s.")
+            print(f"[gpu_reader] WARN gpu_memtest superó {_VRAM_TEST_TIMEOUT_S} s → fallback.")
         except Exception as exc:
-            print(f"[gpu_reader] WARN gpu_memtest: {exc}")
+            print(f"[gpu_reader] WARN gpu_memtest: {exc} → fallback.")
+        # Fallback explícito: caer al bloque memtester de abajo.
 
-    # ── NVIDIA → cuda-memtest ──────────────────────────────────────────────
+    # ── NVIDIA cuda-memtest ───────────────────────────────────────────────
     if "nvidia" in d:
         runtime_log("CUDA: Lanzando test de integridad de VRAM...")
         try:
-            r = subprocess.run(
-                ["cuda-memtest"],
-                capture_output=True, text=True,
-                timeout=_VRAM_TEST_TIMEOUT_S,
-            )
+            r = subprocess.run(["cuda-memtest"], capture_output=True, text=True,
+                               timeout=_VRAM_TEST_TIMEOUT_S)
             errors = _parse_cuda_memtest_errors(r.stdout + r.stderr)
             return 0, 0, errors, max(vram_total_gb, 1), True
         except FileNotFoundError:
-            print("[gpu_reader] INFO cuda-memtest no disponible. Instalar: sudo pacman -S cuda-tools")
+            print("[gpu_reader] INFO cuda-memtest no disponible.")
         except subprocess.TimeoutExpired:
             print(f"[gpu_reader] WARN cuda-memtest superó {_VRAM_TEST_TIMEOUT_S} s.")
         except Exception as exc:
             print(f"[gpu_reader] WARN cuda-memtest: {exc}")
+        return 0, 0, 0, 0, False  # Sin fallback para NVIDIA
 
-    # ── Intel iGPU (i915 / Xe) y AMD APUs → proxy memtester sobre DRAM compartido ───
+    # ── Intel iGPU / Xe / AMD APU → memtester sobre DRAM compartida ───────
+    # Alcanzado por:
+    #   - i915 / xe (siempre)
+    #   - amdgpu con vram_total_gb == 0 (APU, sin VRAM dedicada)
+    #   - amdgpu discreto cuando gpu_memtest no estaba disponible
     if "i915" in d or "xe" in d or "amdgpu" in d:
         test_mb = min(max(vram_total_gb * 1024, 256), 1024)
         try:
             r = subprocess.run(
-                ["sudo", "memtester", f"{test_mb}M", "1"],
-                capture_output=True, text=True,
-                timeout=_VRAM_TEST_TIMEOUT_S,
+                ["memtester", f"{test_mb}M", "1"],
+                capture_output=True, text=True, timeout=_VRAM_TEST_TIMEOUT_S,
             )
-            failures = len(re.findall(r"\bFAILURE\b", r.stdout + r.stderr, re.IGNORECASE))
+            failures  = len(re.findall(r"\bFAILURE\b", r.stdout + r.stderr, re.IGNORECASE))
             tested_gb = max(test_mb // 1024, 1)
             return failures, 0, 0, tested_gb, True
         except FileNotFoundError:
@@ -589,113 +463,30 @@ def _run_vram_stress_test(
 # ════════════════════════════════════════════════════════════════════════════
 
 def _read_temps_nvidia() -> tuple[float, float]:
-    """
-    Lee temperatura edge (GPU die) y hotspot vía nvidia-smi.
-
-    Contexto de uso
-    ---------------
-    El driver propietario NVIDIA (blob) habitualmente NO expone nodos
-    hwmon en /sys/class/hwmon cuando:
-      - IOMMU/VT-d está activo (común en Live OS con UEFI Secure Boot).
-      - La GPU opera en modo offload (Prime Offload / Optimus).
-      - El módulo nouveau está ennegrecido (blacklist) y el blob se cargó
-        tarde en el proceso de arranque del Live OS.
-
-    En esos escenarios, _find_gpu_hwmon() devuelve None y la Capa 5
-    retornaría (0.0, 0.0) sin datos útiles.  Esta función proporciona
-    el fallback usando la interfaz propietaria.
-
-    Mapa de campos nvidia-smi
-    -------------------------
-    temperature.gpu    → T_edge  (junction die)
-    temperature.memory → T_hotspot proxy (VRAM; devuelve "[N/A]" en
-                         GPUs sin sensor de memoria dedicado → se usa
-                         T_edge como proxy conservador).
-
-    Returns
-    -------
-    (t_edge, t_hotspot) en °C, redondeados a 1 decimal.
-    (0.0, 0.0) ante cualquier fallo, incluyendo nvidia-smi no instalado.
-    """
     try:
         raw = _run(
-            [
-                "nvidia-smi",
-                "--query-gpu=temperature.gpu,temperature.memory",
-                "--format=csv,noheader,nounits",
-            ],
+            ["nvidia-smi", "--query-gpu=temperature.gpu,temperature.memory",
+             "--format=csv,noheader,nounits"],
             timeout=_NSMI_TIMEOUT,
         )
-        parts  = [p.strip() for p in raw.strip().split(",")]
-        t_edge = _safe_float(parts[0]) if parts else 0.0
-
-        # temperature.memory puede ser "[N/A]" o "N/A" en tarjetas sin sensor VRAM
+        parts     = [p.strip() for p in raw.strip().split(",")]
+        t_edge    = _safe_float(parts[0]) if parts else 0.0
         mem_raw   = parts[1].upper() if len(parts) > 1 else ""
-        t_hotspot = (
-            _safe_float(parts[1])
-            if mem_raw and "N/A" not in mem_raw
-            else t_edge  # proxy conservador: misma temperatura que edge
-        )
-
+        t_hotspot = (_safe_float(parts[1]) if mem_raw and "N/A" not in mem_raw else t_edge)
         if _TEMP_MIN <= t_edge <= _TEMP_MAX:
             return round(t_edge, 1), round(t_hotspot, 1)
-
     except FileNotFoundError:
-        pass  # nvidia-smi ausente: silencioso, no es error de hardware
+        pass
     except Exception as exc:
         print(f"[gpu_reader] WARN _read_temps_nvidia: {exc}")
-
     return 0.0, 0.0
 
 
-def _active_thermal_test_gpu(
-    hwmon: Path,
-) -> tuple[float, float]:
+def _active_thermal_test_gpu(hwmon: Path) -> tuple[float, float]:
     """
-    Ejecuta ``stress-ng --matrix 0 --timeout 20s`` para generar carga
-    matricial sobre el procesador/iGPU y muestrea las temperaturas de
-    Edge y Hotspot desde el hwmon del dispositivo DRM.
-
-    Arquitectura de hilos
-    ---------------------
-    * Main thread : Popen stress-ng → wait → espera enfriamiento → join.
-    * Sampler thread: bucle con ``stop_event.wait(timeout=2)`` como sleep
-      interruptible.  Se detiene cuando el main thread llama a
-      ``stop_event.set()``.
-
-    El hilo de muestreo registra las temperaturas reales durante la carga
-    y el enfriamiento pasivo.  El resultado es el PICO térmico medido,
-    no una lectura estática en reposo.
-
-    Nota sobre cargas de iGPU/APU
-    ------------------------------
-    ``stress-ng --matrix`` estresa la FPU/ALU del procesador con operaciones
-    matriciales (GEMM).  En sistemas APU (AMD Ryzen integrado, Intel UHD),
-    esto eleva la temperatura del die compartido CPU/GPU y es suficiente
-    para revelar problemas de disipación.  En GPUs discretas con VRAM
-    dedicada, el calentamiento del die gráfico es mínimo bajo este stressor;
-    en ese caso los valores idle son igualmente representativos del estado
-    base del sistema de refrigeración.
-
-    Degradación elegante
-    --------------------
-    * FileNotFoundError → stress-ng no instalado: se detiene el hilo y
-      se devuelven las temperaturas idle leídas antes del intento.
-    * TimeoutExpired o cualquier otra excepción → mismo comportamiento.
-
-    Parameters
-    ----------
-    hwmon : Path
-        Directorio hwmon del dispositivo DRM (contendrá temp1_input,
-        temp2_input, etc.).
-
-    Returns
-    -------
-    (t_edge_peak, t_hotspot_peak)
-        Temperatura máxima de Edge y Hotspot observadas en °C.
-        Valores idle si stress-ng no pudo ejecutarse (honestidad forense).
+    Genera carga matricial con stress-ng y registra picos de T_edge / T_hotspot.
+    Retorna temperaturas idle si stress-ng no está disponible.
     """
-    # ── Lectura baseline (idle antes de cualquier carga) ─────────────────
     t_edge_idle    = _read_temp_millic(hwmon, "temp1_input") or 0.0
     t_hotspot_idle = _read_temp_millic(hwmon, "temp2_input") or 0.0
 
@@ -703,10 +494,8 @@ def _active_thermal_test_gpu(
     samples_hotspot: list[float] = [t_hotspot_idle] if t_hotspot_idle > 0.0 else []
 
     stop_event = threading.Event()
-    start_ts   = time.monotonic()
 
     def _sampler() -> None:
-        """Hilo secundario: muestrea temps cada _GPU_SAMPLE_INTERVAL_S segundos."""
         while not stop_event.is_set():
             te = _read_temp_millic(hwmon, "temp1_input")
             th = _read_temp_millic(hwmon, "temp2_input")
@@ -716,34 +505,24 @@ def _active_thermal_test_gpu(
                 samples_hotspot.append(th)
             stop_event.wait(timeout=_GPU_SAMPLE_INTERVAL_S)
 
-    sampler = threading.Thread(
-        target=_sampler, daemon=True, name="gpu-thermal-sampler"
-    )
+    sampler = threading.Thread(target=_sampler, daemon=True, name="gpu-thermal-sampler")
     sampler.start()
 
-    # ── Ejecutar stress-ng ────────────────────────────────────────────────
     proc: Optional[subprocess.Popen] = None
     stress_ok = False
     try:
         runtime_log("GPU: Iniciando carga matricial para medición de Hotspot...")
         proc = subprocess.Popen(
-            ["stress-ng", "--matrix", "0",
-             "--timeout", f"{_GPU_STRESS_DURATION_S}s"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            ["stress-ng", "--matrix", "0", "--timeout", f"{_GPU_STRESS_DURATION_S}s"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         proc.wait(timeout=_GPU_STRESS_DURATION_S + 15)
         stress_ok = True
-
     except FileNotFoundError:
-        print("[gpu_reader] WARN stress-ng no encontrado. "
-              "Prueba activa GPU omitida; usando lectura idle.")
-
+        print("[gpu_reader] WARN stress-ng no encontrado. Usando lectura idle.")
     except subprocess.TimeoutExpired:
         if proc is not None:
             proc.kill()
-        print("[gpu_reader] WARN stress-ng GPU excedió el timeout; proceso terminado.")
-
     except Exception as exc:
         if proc is not None:
             try:
@@ -753,21 +532,16 @@ def _active_thermal_test_gpu(
         print(f"[gpu_reader] WARN stress-ng GPU: {exc}")
 
     if not stress_ok:
-        # Sin carga activa → devolver baseline y detener el hilo.
         stop_event.set()
         sampler.join(timeout=_GPU_SAMPLE_INTERVAL_S + 2)
         return t_edge_idle, t_hotspot_idle
 
-    # ── Fase de enfriamiento pasivo ───────────────────────────────────────
-    # El hilo continúa muestreando durante el cooldown.
     stop_event.wait(timeout=float(_GPU_COOLING_DURATION_S))
     stop_event.set()
     sampler.join(timeout=_GPU_SAMPLE_INTERVAL_S + 2)
 
-    # ── Extraer picos ─────────────────────────────────────────────────────
     t_edge_peak    = round(max(samples_edge),    1) if samples_edge    else 0.0
     t_hotspot_peak = round(max(samples_hotspot), 1) if samples_hotspot else 0.0
-
     return t_edge_peak, t_hotspot_peak
 
 
@@ -776,60 +550,43 @@ def _active_thermal_test_gpu(
 # ════════════════════════════════════════════════════════════════════════════
 
 def _pcie_speed_str_to_gen(speed_str: str) -> int:
-    """Convierte la cadena de velocidad PCIe a número de generación."""
     m = re.search(r"([\d.]+)\s*GT/s", speed_str, re.IGNORECASE)
     if m:
-        speed_val = float(m.group(1))
-        if speed_val <= 2.5:  return 1
-        if speed_val <= 5.0:  return 2
-        if speed_val <= 8.0:  return 3
-        if speed_val <= 16.0: return 4
-        if speed_val <= 32.0: return 5
+        v = float(m.group(1))
+        if v <= 2.5:  return 1
+        if v <= 5.0:  return 2
+        if v <= 8.0:  return 3
+        if v <= 16.0: return 4
+        if v <= 32.0: return 5
         return 6
     return 0
 
 
 def _read_pcie_sysfs(card: Path) -> dict[str, object]:
-    """Lee parámetros PCIe desde sysfs del dispositivo DRM."""
     result: dict[str, object] = {
-        "gen_active":  0, "lanes_active": 0,
-        "gen_max":     0, "lanes_max":    0,
-        "bw_active":   "N/A", "bw_max": "N/A",
+        "gen_active": 0, "lanes_active": 0,
+        "gen_max":    0, "lanes_max":    0,
+        "bw_active":  "N/A", "bw_max":  "N/A",
     }
-
     dev = card / "device"
+    for key, sysfs_file, converter in (
+        ("gen_active",   "current_link_speed", _pcie_speed_str_to_gen),
+        ("lanes_active", "current_link_width", _safe_int),
+        ("gen_max",      "max_link_speed",     _pcie_speed_str_to_gen),
+        ("lanes_max",    "max_link_width",     _safe_int),
+    ):
+        try:
+            result[key] = converter(_sysfs(dev / sysfs_file))
+        except Exception:
+            pass
 
-    try:
-        cur_speed = _sysfs(dev / "current_link_speed")
-        result["gen_active"] = _pcie_speed_str_to_gen(cur_speed)
-    except Exception:
-        pass
-
-    try:
-        result["lanes_active"] = _safe_int(_sysfs(dev / "current_link_width"))
-    except Exception:
-        pass
-
-    try:
-        max_speed = _sysfs(dev / "max_link_speed")
-        result["gen_max"] = _pcie_speed_str_to_gen(max_speed)
-    except Exception:
-        pass
-
-    try:
-        result["lanes_max"] = _safe_int(_sysfs(dev / "max_link_width"))
-    except Exception:
-        pass
-
-    gen_a  = int(result["gen_active"])
-    lane_a = int(result["lanes_active"])
-    gen_m  = int(result["gen_max"])
-    lane_m = int(result["lanes_max"])
-
-    if gen_a > 0 and lane_a > 0:
-        result["bw_active"] = _PCIE_BW_TABLE.get((gen_a, lane_a), f"Gen{gen_a} x{lane_a}")
-    if gen_m > 0 and lane_m > 0:
-        result["bw_max"] = _PCIE_BW_TABLE.get((gen_m, lane_m), f"Gen{gen_m} x{lane_m}")
+    for prefix, gen_k, lane_k, bw_k in (
+        ("active", "gen_active",  "lanes_active", "bw_active"),
+        ("max",    "gen_max",     "lanes_max",    "bw_max"),
+    ):
+        g, l = int(result[gen_k]), int(result[lane_k])
+        if g > 0 and l > 0:
+            result[bw_k] = _PCIE_BW_TABLE.get((g, l), f"Gen{g} x{l}")
 
     return result
 
@@ -839,31 +596,19 @@ def _read_pcie_sysfs(card: Path) -> dict[str, object]:
 # ════════════════════════════════════════════════════════════════════════════
 
 def _read_aer(bdf: str) -> tuple[int, int]:
-    """Lee los contadores AER desde sysfs PCI."""
-    bdf_normalized = bdf if bdf.count(":") == 2 else f"0000:{bdf}"
-    dev_path = Path(f"/sys/bus/pci/devices/{bdf_normalized}")
-
-    correctable = 0
-    fatal       = 0
-
-    try:
-        raw_corr = _sysfs(dev_path / "aer_dev_correctable")
-        for line in raw_corr.splitlines():
-            parts = line.split()
-            if len(parts) == 2:
-                correctable += _safe_int(parts[1])
-    except Exception:
-        pass
-
-    try:
-        raw_fatal = _sysfs(dev_path / "aer_dev_fatal")
-        for line in raw_fatal.splitlines():
-            parts = line.split()
-            if len(parts) == 2:
-                fatal += _safe_int(parts[1])
-    except Exception:
-        pass
-
+    bdf_norm = bdf if bdf.count(":") == 2 else f"0000:{bdf}"
+    dev_path = Path(f"/sys/bus/pci/devices/{bdf_norm}")
+    correctable = fatal = 0
+    for fname, counter in (("aer_dev_correctable", "correctable"), ("aer_dev_fatal", "fatal")):
+        try:
+            raw = _sysfs(dev_path / fname)
+            total = sum(_safe_int(ln.split()[1]) for ln in raw.splitlines() if len(ln.split()) == 2)
+            if counter == "correctable":
+                correctable = total
+            else:
+                fatal = total
+        except Exception:
+            pass
     return correctable, fatal
 
 
@@ -873,38 +618,17 @@ def _read_aer(bdf: str) -> tuple[int, int]:
 
 def extract_gpu_data() -> GPUData:
     """
-    Extrae y ensambla todos los datos de GPU en una instancia ``GPUData``.
+    Extrae y ensambla todos los datos de GPU en una instancia GPUData.
 
-    Arquitectura de extracción en 7 capas independientes
-    -----------------------------------------------------
-    Cada capa tiene su propio try/except.  Si falla, sus campos quedan en
-    el valor nulo honesto del modelo.  El guard externo garantiza
-    GPUData() vacío ante cualquier fallo no anticipado.
+    FIX v1.2: _parse_lspci_mm() usa shlex.split() en lugar de split("\\t"),
+    resolviendo la no-detección de GPU en hardware real.
 
-    Forense Activo (Capa 5 — NUEVO)
-    --------------------------------
-    Se lanza ``stress-ng --matrix 0 --timeout 20s`` para generar carga
-    térmica real en el die CPU/iGPU.  Un hilo secundario muestrea Edge y
-    Hotspot cada 2 s.  El resultado es el delta hotspot REAL bajo estrés,
-    revelando problemas de disipación que no aparecen en reposo.
-
-    Si stress-ng no está instalado → degradación elegante a lectura idle.
-
-    Honestidad forense
-    ------------------
-    - VRAM: 0 GB si no hay lectura sysfs.
-    - Temperatura: 0.0 °C si no hay sensor; estado "info", no "ok".
-    - PCIe: "N/A" / 0 si sysfs no responde.
-
-    Returns
-    -------
-    GPUData
-        Instancia completamente poblada.  Nunca lanza excepciones.
+    Nunca lanza excepciones (guard externo garantiza GPUData() vacío).
     """
     try:
-        # ── Capa 1: identificación por lspci ──────────────────────────────
-        gpu_model          = "N/A"
-        bdf                = ""
+        # ── Capa 1: identificación ────────────────────────────────────────
+        gpu_model = "N/A"
+        bdf       = ""
         driver_name        = ""
         driver_version_str = "N/A"
         gpu_pcie_gen_info  = 0
@@ -913,10 +637,10 @@ def extract_gpu_data() -> GPUData:
         try:
             gpus = _parse_lspci_mm()
             if gpus:
-                g         = gpus[0]
-                bdf       = g["bdf"]
-                gpu_model = f"{g['vendor']} {g['device']}".strip()
-                verbose   = _parse_lspci_verbose(bdf)
+                g          = gpus[0]
+                bdf        = g["bdf"]
+                gpu_model  = f"{g['vendor']} {g['device']}".strip()
+                verbose    = _parse_lspci_verbose(bdf)
                 driver_name         = verbose.get("driver", "")
                 cap_speed           = verbose.get("lnkcap_speed", "")
                 if cap_speed:
@@ -925,109 +649,79 @@ def extract_gpu_data() -> GPUData:
         except Exception as exc:
             print(f"[gpu_reader] WARN lspci: {exc}")
 
-        # ── Capa 2: versión del driver ─────────────────────────────────────
         if driver_name:
             try:
                 driver_version_str = _driver_version(driver_name)
             except Exception:
                 pass
 
-        # ── Capa 3: localizar el nodo DRM ─────────────────────────────────
+        # ── Capa 2: nodo DRM ─────────────────────────────────────────────
         card: Optional[Path] = None
         try:
             card = _find_drm_card(bdf)
         except Exception:
             pass
 
-        # ── Capa 4: VRAM + detección de GUI + test de integridad ──────────
-        vram_gb       = 0
-        vram_type     = "N/A"
-        vram_tested   = False
-        seq_errors    = 0
-        rand_errors   = 0
-        stress_errors = 0
-        stress_gb     = 0
-
+        # ── Capa 3: VRAM ─────────────────────────────────────────────────
+        vram_gb = vram_type_str = 0, "N/A"
         try:
             if card is not None:
-                vram_gb, vram_type = _read_vram_amdgpu(card)
+                vram_gb, vram_type_str = _read_vram_amdgpu(card)
         except Exception:
             pass
 
         if vram_gb == 0 and "nvidia" in driver_name.lower():
             try:
-                vram_gb, vram_type = _read_vram_nvidia()
+                vram_gb, vram_type_str = _read_vram_nvidia()
             except Exception:
                 pass
 
-        # Test de integridad: solo en TTY pura confirmada.
+        # ── Capa 4: integridad VRAM ───────────────────────────────────────
+        vram_tested = False
+        seq_errors = rand_errors = stress_errors = stress_gb = 0
+
         if _is_gui_active():
-            print(
-                "[gpu_reader] INFO GUI activa detectada. "
-                "Test destructivo de VRAM omitido para preservar el entorno gráfico."
-            )
+            print("[gpu_reader] INFO GUI activa. Test destructivo de VRAM omitido.")
         else:
-            print("[gpu_reader] INFO TTY puro detectado. Ejecutando test de integridad de VRAM...")
+            print("[gpu_reader] INFO TTY puro. Ejecutando test de integridad de VRAM...")
             try:
                 (seq_errors, rand_errors, stress_errors,
                  stress_gb, vram_tested) = _run_vram_stress_test(vram_gb, driver_name)
             except Exception as exc:
                 print(f"[gpu_reader] WARN _run_vram_stress_test: {exc}")
-                vram_tested = False
 
-        # ── Capa 5: PRUEBA TÉRMICA ACTIVA ─────────────────────────────────
-        gpu_t_edge        = 0.0
-        gpu_t_hotspot     = 0.0
+        # ── Capa 5: temperatura activa ────────────────────────────────────
+        gpu_t_edge = gpu_t_hotspot = 0.0
         gpu_delta_hotspot = 0.0
-        temp_limit        = 110
-        hotspot_status    = "info"
+        temp_limit     = 110
+        hotspot_status = "info"
 
         try:
             if card is not None:
                 hwmon = _find_gpu_hwmon(card)
                 if hwmon is not None:
-                    # Límite de temperatura: dato de fábrica, no cambia bajo carga.
-                    temp_limit = _read_temp_limit(hwmon)
-                    # Prueba activa: picos de Edge y Hotspot bajo stress-ng.
-                    gpu_t_edge, gpu_t_hotspot = _active_thermal_test_gpu(hwmon)
-                    gpu_delta_hotspot = round(gpu_t_hotspot - gpu_t_edge, 1)
-                    hotspot_status    = _classify_hotspot(
-                        gpu_delta_hotspot, gpu_t_edge, gpu_t_hotspot
-                    )
+                    temp_limit                     = _read_temp_limit(hwmon)
+                    gpu_t_edge, gpu_t_hotspot      = _active_thermal_test_gpu(hwmon)
+                    gpu_delta_hotspot              = round(gpu_t_hotspot - gpu_t_edge, 1)
+                    hotspot_status                 = _classify_hotspot(gpu_delta_hotspot, gpu_t_edge, gpu_t_hotspot)
 
-            # ── Fallback NVIDIA: driver propietario sin hwmon expuesto ────
-            # Se activa si y solo si la ruta hwmon no produjo datos útiles
-            # y el driver en uso es nvidia (blob).
             if gpu_t_edge == 0.0 and "nvidia" in driver_name.lower():
                 nv_edge, nv_hotspot = _read_temps_nvidia()
                 if nv_edge > 0.0:
                     gpu_t_edge        = nv_edge
                     gpu_t_hotspot     = nv_hotspot
-                    gpu_delta_hotspot = round(gpu_t_hotspot - gpu_t_edge, 1)
-                    hotspot_status    = _classify_hotspot(
-                        gpu_delta_hotspot, gpu_t_edge, gpu_t_hotspot
-                    )
-                    print(
-                        f"[gpu_reader] INFO NVIDIA hwmon ausente; "
-                        f"temps via nvidia-smi: "
-                        f"edge={gpu_t_edge}°C  hotspot={gpu_t_hotspot}°C"
-                    )
-                else:
-                    # nvidia-smi tampoco respondió: estado "info" es correcto,
-                    # no fabricamos datos.
-                    print(
-                        "[gpu_reader] WARN NVIDIA: ni hwmon ni nvidia-smi "
-                        "disponibles. Temperaturas reportadas como UNKNOWN."
-                    )
-
+                    gpu_delta_hotspot = round(nv_hotspot - nv_edge, 1)
+                    hotspot_status    = _classify_hotspot(gpu_delta_hotspot, nv_edge, nv_hotspot)
+                    print(f"[gpu_reader] INFO NVIDIA hwmon ausente; temps via nvidia-smi: "
+                          f"edge={nv_edge}°C hotspot={nv_hotspot}°C")
         except Exception as exc:
             print(f"[gpu_reader] WARN prueba térmica activa: {exc}")
 
-        # ── Capa 6: PCIe desde sysfs ───────────────────────────────────────
+        # ── Capa 6: PCIe ─────────────────────────────────────────────────
         pcie: dict[str, object] = {
             "gen_active": 0, "lanes_active": 0,
-            "gen_max": 0,    "lanes_max":    0,
-            "bw_active": "N/A", "bw_max": "N/A",
+            "gen_max":    0, "lanes_max":    0,
+            "bw_active":  "N/A", "bw_max":  "N/A",
         }
         try:
             if card is not None:
@@ -1035,55 +729,45 @@ def extract_gpu_data() -> GPUData:
         except Exception as exc:
             print(f"[gpu_reader] WARN PCIe: {exc}")
 
-        if gpu_pcie_gen_info == 0:
-            gpu_pcie_gen_info   = int(pcie["gen_max"])
-        if gpu_pcie_width_info == 0:
-            gpu_pcie_width_info = int(pcie["lanes_max"])
+        if gpu_pcie_gen_info   == 0: gpu_pcie_gen_info   = int(pcie["gen_max"])
+        if gpu_pcie_width_info == 0: gpu_pcie_width_info = int(pcie["lanes_max"])
 
-        # ── Capa 7: AER ─────────────────────────────────────────────────────
-        aer_corr  = 0
-        aer_fatal = 0
+        # ── Capa 7: AER ──────────────────────────────────────────────────
+        aer_corr = aer_fatal = 0
         try:
             if bdf:
                 aer_corr, aer_fatal = _read_aer(bdf)
         except Exception:
             pass
 
-        # ── Ensamblaje final ──────────────────────────────────────────────
         return GPUData(
             gpu_model          = gpu_model,
             gpu_vram_total     = vram_gb,
-            gpu_vram_type      = vram_type,
+            gpu_vram_type      = vram_type_str,
             gpu_driver_version = driver_version_str,
             gpu_pcie_gen       = gpu_pcie_gen_info,
             gpu_pcie_width     = gpu_pcie_width_info,
-
-            # Temperatura — valores de pico bajo carga real (Forense Activo)
             gpu_t_edge           = gpu_t_edge,
             gpu_t_hotspot        = gpu_t_hotspot,
             gpu_delta_t_hotspot  = gpu_delta_hotspot,
             gpu_temp_limit       = temp_limit,
             gpu_hotspot_status   = hotspot_status,
-
-            # VRAM stress (honesto o ejecutado en TTY)
             gpu_vram_tested       = vram_tested,
             gpu_vram_seq_errors   = seq_errors,
             gpu_vram_rand_errors  = rand_errors,
             gpu_vram_stress_gb    = stress_gb,
             gpu_vram_stress_errors= stress_errors,
             gpu_ecc_correctable   = 0,
-
             gpu_pcie_gen_max      = int(pcie["gen_max"]),
             gpu_pcie_gen_active   = int(pcie["gen_active"]),
             gpu_pcie_lanes_max    = int(pcie["lanes_max"]),
             gpu_pcie_lanes_active = int(pcie["lanes_active"]),
             gpu_pcie_bw_max       = str(pcie["bw_max"]),
             gpu_pcie_bw_active    = str(pcie["bw_active"]),
-
-            gpu_aer_correctable = aer_corr,
-            gpu_aer_fatal       = aer_fatal,
+            gpu_aer_correctable   = aer_corr,
+            gpu_aer_fatal         = aer_fatal,
         )
 
-    except Exception as exc:   # pragma: no cover — guardia absoluta
+    except Exception as exc:
         print(f"[gpu_reader] ERROR CRÍTICO en extract_gpu_data(): {exc}")
         return GPUData()

@@ -250,7 +250,7 @@ def _detect_chipset() -> str:
 
     # ── Estrategia 2: socket → tabla de chipsets ──────────────────────────
     try:
-        raw_proc = _run(["sudo", "dmidecode", "-t", "processor"])
+        raw_proc = _run(["dmidecode", "-t", "processor"])
         m        = re.search(r"Socket Designation:\s*(.+)", raw_proc)
         if m:
             socket_raw = m.group(1).strip()
@@ -517,14 +517,14 @@ def extract_motherboard_data() -> MotherboardData:
         bios_date    = "N/A"
 
         try:
-            raw_board = _run(["sudo", "dmidecode", "-t", "baseboard"])
+            raw_board = _run(["dmidecode", "-t", "baseboard"])
             manufacturer, mobo_model = _parse_baseboard(raw_board)
         except Exception as exc:
             print(f"[mobo_reader] WARN dmidecode baseboard: {exc}")
 
         # ── Capa 1b: dmidecode bios ───────────────────────────────────────
         try:
-            raw_bios     = _run(["sudo", "dmidecode", "-t", "bios"])
+            raw_bios     = _run(["dmidecode", "-t", "bios"])
             bios_version, bios_date = _parse_bios(raw_bios)
         except Exception as exc:
             print(f"[mobo_reader] WARN dmidecode bios: {exc}")

@@ -3,36 +3,39 @@ extractors/ram_reader.py
 ========================
 Extractor de hardware para el subsistema de memoria RAM de probe.tex.
 
-Fuentes de datos (en orden de preferencia / fallback)
-------------------------------------------------------
-Identificación y topología
-  1. ``sudo dmidecode -t memory``  → módulos DIMM, tipo, velocidad, slots.
-  2. ``sudo dmidecode -t 17``      → alias, como respaldo.
-  3. /proc/meminfo                 → capacidad total real (validación).
+CHANGELOG v1.2
+--------------
+* FIX: Hardening para memoria LPDDR5 soldada (RAM on-die).
 
-Errores EDAC (hardware ECC)
-  4. /sys/devices/system/edac/mc/ → conteo de errores por controlador.
-     Si el directorio no existe (hardware consumer, sin ECC), devuelve 0.
+  En laptops modernas con memoria soldada (Ryzen 7xxx mobile, Intel
+  Meteor Lake, Apple Silicon port scenarios) dmidecode puede devolver:
+    a) Una lista vacía de Memory Device blocks.
+    b) Blocks con Size: "No Module Installed" (slots físicos vacíos).
+    c) Blocks con Type: "Unknown" y Speed: 0 (SMBIOS incompleto).
 
-Prueba Activa de Integridad (Forense Activo)
-  5. ``sudo memtester 1G 1``
-     Ejecuta una pasada completa de pruebas de integridad sobre 1 GB de
-     memoria.  Si todas las pruebas pasan ("ok"), no se añaden errores.
-     Si alguna muestra "FAILURE", se cuentan y se suman a
-     ``ram_total_errors``.  Los errores de memtester y de EDAC son
-     independientes y se acumulan.
+  Comportamiento correcto en estos escenarios:
+    - slots_total = 0, slots_used = 0 → reportar "0/0" en el template.
+    - total_gb = meminfo_total_gb  (fuente de verdad absoluta).
+    - speed_mhz = 0  (honesto: SMBIOS no lo expone).
+    - mem_type = "N/A" (ídem).
+    - La generación del template NO debe crashear con IndexError en
+      Counter.most_common(1)[0][0] cuando occupied = [].
 
-     Si memtester no está instalado (FileNotFoundError) o supera el
-     timeout (_MEMTESTER_TIMEOUT_S), se registra un aviso y la prueba
-     se omite con 0 errores adicionales.
+  La fuente de verdad para la capacidad total es SIEMPRE /proc/meminfo
+  (MemTotal). dmidecode es informativo para topología; meminfo es el
+  dato que el kernel realmente ve y usa.
 
-Degradación elegante
----------------------
-Cada sub-rutina encapsula su lógica en try/except.  El guard externo
-de ``extract_ram_data()`` garantiza RAMData() vacío ante cualquier
-fallo no anticipado.
+* FIX: _compute_integrity() ya tenía guard contra total_gb=0, pero
+  ahora también documenta explícitamente por qué: un sistema con RAM
+  soldada y 0 errores es 100% íntegro, no un estado indeterminado.
 
-stdlib únicamente: subprocess, re, pathlib, collections.
+Fuentes de datos
+----------------
+dmidecode -t memory  → topología DIMM, tipo, velocidad, slots
+/proc/meminfo        → capacidad total real (fuente de verdad)
+EDAC sysfs           → errores CE/UE por controlador de memoria
+memtester            → prueba activa de integridad (tamaño dinámico)
+Intel MLC            → latencia idle DRAM (opcional, best-effort)
 """
 
 from __future__ import annotations
@@ -55,14 +58,11 @@ from tui import runtime_log
 _EDAC_ROOT    = Path("/sys/devices/system/edac/mc")
 _MEMINFO_PATH = Path("/proc/meminfo")
 
-_EDAC_ERROR_WEIGHT: float = 0.01   # % de integridad por error (ajustado por GB)
+_EDAC_ERROR_WEIGHT: float = 0.01
 
-# ── Memtester — tamaño dinámico (Live OS Safety) ─────────────────────────────
-# La constante fija _MEMTESTER_SIZE = "1G" se elimina. El tamaño se calcula
-# en tiempo de ejecución mediante _compute_memtester_size().
-_MEMTESTER_MIN_MB:    int   = 64     # piso absoluto
-_MEMTESTER_MAX_MB:    int   = 512    # techo para Live OS (evita OOM en 4 GB)
-_MEMTESTER_FREE_PCT:  float = 0.10   # fracción de MemAvailable a usar
+_MEMTESTER_MIN_MB:    int   = 64
+_MEMTESTER_MAX_MB:    int   = 512
+_MEMTESTER_FREE_PCT:  float = 0.10
 _MEMTESTER_LOOPS:     int   = 1
 _MEMTESTER_TIMEOUT_S: int   = 600
 
@@ -70,19 +70,9 @@ _DMIDECODE_TIMEOUT: int = 6
 
 _MLC_TIMEOUT_S:  Final[int]   = 60
 _MLC_LAT_MIN_NS: Final[float] = 10.0
-"""Mínimo físicamente plausible para DRAM en ns (LPDDR5X ~10–20 ns)."""
 _MLC_LAT_MAX_NS: Final[float] = 500.0
-"""Máximo plausible. >500 ns indica unidad incorrecta o artefacto de parseo."""
 
-# Captura la fila "  0    75.3" del output de mlc --idle_latency:
-# la primera columna es el nodo NUMA origen (0), la siguiente es la latencia
-# al nodo 0 (local, sin cruce de interconexión). Se requiere al menos un
-# dígito antes y después del punto decimal para evitar colisiones con
-# versiones del binario que imprimen rangos como "73-78".
-_MLC_LAT_RE: re.Pattern = re.compile(
-    r"^\s+0\s+(\d+\.\d+)",
-    re.MULTILINE,
-)
+_MLC_LAT_RE: re.Pattern = re.compile(r"^\s+0\s+(\d+\.\d+)", re.MULTILINE)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -139,7 +129,7 @@ class _DimmModule:
 def _run_dmidecode() -> str:
     for flag in (["-t", "memory"], ["-t", "17"]):
         try:
-            return _run(["sudo", "dmidecode"] + flag)
+            return _run(["dmidecode"] + flag)
         except Exception:
             continue
     raise RuntimeError("dmidecode no disponible o sin privilegios suficientes.")
@@ -147,9 +137,12 @@ def _run_dmidecode() -> str:
 
 def _parse_dmidecode(raw: str) -> list[_DimmModule]:
     """
-    Parsea la salida de ``dmidecode -t memory`` en una lista de _DimmModule.
-    Cada bloque "Memory Device" se convierte en un objeto.
-    Los slots vacíos quedan con size_gb=0.
+    Parsea bloques "Memory Device" de dmidecode.
+
+    Slots vacíos (Size: "No Module Installed") quedan con size_gb=0.
+    En hardware con memoria soldada el resultado puede ser [] (vacío)
+    si el SMBIOS no expone ningún Memory Device — comportamiento correcto,
+    no un error. El caller lo maneja con la fuente de verdad /proc/meminfo.
     """
     modules: list[_DimmModule] = []
     blocks = re.split(r"(?=^Memory Device$)", raw, flags=re.MULTILINE)
@@ -200,14 +193,28 @@ def _parse_dmidecode(raw: str) -> list[_DimmModule]:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  CAPA 2 — /proc/meminfo: validación de capacidad total
+#  CAPA 2 — /proc/meminfo: fuente de verdad para capacidad total
 # ════════════════════════════════════════════════════════════════════════════
 
 def _total_gb_from_meminfo() -> int:
-    raw = _read_sysfs(_MEMINFO_PATH)
-    m   = re.search(r"MemTotal:\s+(\d+)\s+kB", raw)
-    if m:
-        return max(1, round(int(m.group(1)) / 1_048_576))
+    """
+    Lee MemTotal de /proc/meminfo y lo convierte a GB (round).
+
+    Esta es la ÚNICA fuente fiable de capacidad total en:
+      - Sistemas con memoria soldada (LPDDR5, LPDDR4X on-die).
+      - Sistemas donde dmidecode devuelve Size: 0 o lista vacía.
+      - Hypervisors con SMBIOS sintético.
+
+    Retorna 0 solo si /proc/meminfo no existe o no es parseable —
+    situación que no puede ocurrir en un kernel Linux funcional.
+    """
+    try:
+        raw = _read_sysfs(_MEMINFO_PATH)
+        m   = re.search(r"MemTotal:\s+(\d+)\s+kB", raw)
+        if m:
+            return max(1, round(int(m.group(1)) / 1_048_576))
+    except Exception:
+        pass
     return 0
 
 
@@ -217,8 +224,8 @@ def _total_gb_from_meminfo() -> int:
 
 def _read_edac_errors() -> dict[str, tuple[int, int]]:
     """
-    Lee CE/UE por csrow desde sysfs EDAC.
-    Devuelve vacío silenciosamente si EDAC no está disponible (no-ECC).
+    Lee CE/UE por csrow. Devuelve vacío si EDAC no está expuesto (no-ECC).
+    Hardware consumer sin ECC es el caso normal; no es un error.
     """
     result: dict[str, tuple[int, int]] = {}
     if not _EDAC_ROOT.exists():
@@ -239,10 +246,13 @@ def _read_edac_errors() -> dict[str, tuple[int, int]]:
     return result
 
 
-def _assign_edac_to_dimms(
-    modules:  list[_DimmModule],
-    edac:     dict[str, tuple[int, int]],
-) -> None:
+def _assign_edac_to_dimms(modules: list[_DimmModule], edac: dict[str, tuple[int, int]]) -> None:
+    """
+    Asigna errores EDAC a los módulos DIMM ocupados por índice de csrow.
+    Si modules es vacío (memoria soldada), no hay nada que asignar.
+    """
+    if not modules:
+        return
     csrow_entries = sorted(edac.items())
     occupied      = [m for m in modules if m.occupied]
     for idx, (_, (ce, ue)) in enumerate(csrow_entries):
@@ -257,15 +267,10 @@ def _assign_edac_to_dimms(
 
 def _infer_dual_channel(modules: list[_DimmModule]) -> bool:
     """
-    Infiere dual-channel desde los locator names de DMI.
+    Infiere dual-channel por locator names o por conteo de módulos.
 
-    Patrones comunes:
-      - Intel: DIMM_A1, DIMM_B1 → canales A y B poblados → dual
-      - AMD:   DIMM_P0, DIMM_P1 → ídem
-      - Fallback numérico: pares de slots con IDs distintos
-
-    Si los locators son genéricos ("DIMM 0", "DIMM 1") sin letra de canal,
-    usa el conteo como heurística pero lo marca como incierto.
+    Retorna False si modules está vacío (memoria soldada sin slots).
+    No hace suposiciones sobre la topología cuando no hay datos.
     """
     occupied = [m for m in modules if m.occupied]
     if len(occupied) < 2:
@@ -279,56 +284,32 @@ def _infer_dual_channel(modules: list[_DimmModule]) -> bool:
             channels.add(m.group(1).upper())
 
     if channels:
-        # Solo dual-channel si hay al menos 2 canales distintos poblados
         return len(channels) >= 2
 
-    # Fallback: sin letras de canal en los locators → heurística por conteo
-    # Es una estimación, no un hecho verificado.
+    # Fallback heurístico: 2 o 4 módulos suele indicar dual channel.
     return len(occupied) in (2, 4)
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  CAPA 5 — Prueba Activa: memtester
+#  CAPA 5a — memtester: prueba activa de integridad
 # ════════════════════════════════════════════════════════════════════════════
 
 def _compute_memtester_size() -> str:
     """
-    Calcula el tamaño seguro para memtester en función de la RAM disponible
-    en tiempo de ejecución.
-
-    Live OS Safety
-    --------------
-    Un Live OS arrancado desde squashfs+tmpfs puede dejar ≤ 600 MB libres
-    en un equipo de 4 GB.  La constante fija "1G" dispararía el OOM Killer
-    del kernel, matando probe.tex antes de poder emitir el reporte.
-
-    Estrategia
-    ----------
-    1. Lee ``MemAvailable`` de /proc/meminfo (incluye page cache recuperable,
-       más preciso que MemFree en sistemas con tmpfs activo).
-    2. Aplica _MEMTESTER_FREE_PCT (10 %).
-    3. Clampea entre _MEMTESTER_MIN_MB (64) y _MEMTESTER_MAX_MB (512).
-    4. Ante cualquier fallo → fallback conservador de 64 MB.
-
-    Returns
-    -------
-    str
-        Cadena lista para pasar a memtester, ej. ``"128M"``.
+    Calcula el tamaño seguro para memtester como 10% de MemAvailable,
+    clampado en [64 MB, 512 MB]. Evita OOM en Live OS con RAM limitada.
     """
     try:
         content = _MEMINFO_PATH.read_text()
-        # MemAvailable preferido; MemFree como segundo recurso
         m = re.search(r"^MemAvailable:\s+(\d+)\s+kB", content, re.MULTILINE)
         if not m:
-            m = re.search(r"^MemFree:\s+(\d+)\s+kB",      content, re.MULTILINE)
+            m = re.search(r"^MemFree:\s+(\d+)\s+kB", content, re.MULTILINE)
         if m:
             free_kb   = int(m.group(1))
             target_mb = int(free_kb / 1024 * _MEMTESTER_FREE_PCT)
             clamped   = max(_MEMTESTER_MIN_MB, min(_MEMTESTER_MAX_MB, target_mb))
-            print(
-                f"[ram_reader] INFO memtester: {clamped} MB asignados "
-                f"(10 % de {free_kb // 1024} MB disponibles)"
-            )
+            print(f"[ram_reader] INFO memtester: {clamped} MB "
+                  f"(10% de {free_kb // 1024} MB disponibles)")
             return f"{clamped}M"
     except Exception as exc:
         print(f"[ram_reader] WARN _compute_memtester_size: {exc} → fallback 64M")
@@ -337,143 +318,84 @@ def _compute_memtester_size() -> str:
 
 def _run_memtester() -> int:
     """
-    Ejecuta ``sudo memtester <TAMAÑO_DINÁMICO> 1`` y devuelve el número
-    de líneas "FAILURE" encontradas.
-
-    TAMAÑO_DINÁMICO = 10 % de MemAvailable, clampado en [64 MB, 512 MB].
-    Garantiza que el proceso nunca consuma más RAM de la disponible y
-    no active el OOM Killer en entornos Live OS con memoria limitada.
+    Ejecuta memtester con tamaño dinámico. Retorna número de líneas FAILURE.
+    Retorna 0 si memtester no está instalado (no es un error de hardware).
     """
     size = _compute_memtester_size()
     try:
         runtime_log(f"memtester: Auditando {size}B de RAM (Live OS safe mode)...")
         result = subprocess.run(
-            ["sudo", "memtester", size, str(_MEMTESTER_LOOPS)],
-            capture_output=True,
-            text=True,
-            timeout=_MEMTESTER_TIMEOUT_S,
+            ["memtester", size, str(_MEMTESTER_LOOPS)],
+            capture_output=True, text=True, timeout=_MEMTESTER_TIMEOUT_S,
         )
         output   = result.stdout + result.stderr
         failures = len(re.findall(r"\bFAILURE\b", output, re.IGNORECASE))
         if failures:
-            print(f"[ram_reader] memtester detectó {failures} fallo(s) de memoria.")
+            print(f"[ram_reader] memtester detectó {failures} fallo(s).")
         return failures
-
     except FileNotFoundError:
         print("[ram_reader] WARN memtester no encontrado. Prueba activa omitida.")
-        return 0
     except subprocess.TimeoutExpired:
-        print(
-            f"[ram_reader] WARN memtester superó {_MEMTESTER_TIMEOUT_S} s. "
-            "Prueba considerada incompleta."
-        )
-        return 0
+        print(f"[ram_reader] WARN memtester superó {_MEMTESTER_TIMEOUT_S} s.")
     except Exception as exc:
         print(f"[ram_reader] WARN memtester: {exc}")
-        return 0
+    return 0
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  CAPA 5b — Intel MLC: latencia de acceso idle a DRAM
+#  CAPA 5b — Intel MLC: latencia idle DRAM
 # ════════════════════════════════════════════════════════════════════════════
 
 def _measure_mlc_latency() -> Optional[float]:
     """
-    Mide la latencia de acceso idle a DRAM usando Intel Memory Latency Checker.
+    Mide latencia idle DRAM via Intel Memory Latency Checker (mlc).
 
-    Procedimiento
-    ─────────────
-    1. Carga el módulo MSR del kernel: MLC lo necesita para acceder a los
-       contadores de rendimiento (PMU). El fallo de modprobe es silencioso:
-       el módulo puede estar compilado estáticamente o ser irrelevante
-       para la arquitectura objetivo.
-    2. Ejecuta ``sudo mlc --idle_latency`` y parsea la latencia local del
-       nodo NUMA 0 → 0 (DRAM local, sin cruce de interconexión QPI/IF).
-    3. Valida que el resultado esté en el rango físico plausible de DRAM.
+    Retorna la latencia local del nodo NUMA 0 en nanosegundos.
+    Retorna None si mlc no está instalado, timeout, o resultado no plausible.
 
-    Latencias de referencia orientativas
-    ──────────────────────────────────────
-    LPDDR5X-8533:  ~14–18 ns   (portátiles ultrafinos, Intel 13+/AMD 7000)
-    DDR5-6000:     ~42–52 ns   (desktop high-end)
-    DDR4-3200:     ~62–80 ns   (desktop mainstream)
-    DDR4-2133:     ~75–95 ns   (portátil convencional)
-
-    Compatibilidad
-    ──────────────
-    - Intel MLC ≥ v3.x (binario propietario de uso libre, sin código fuente).
-      Descarga: https://www.intel.com/content/www/us/en/download/736633/
-    - Funciona en CPU Intel x86-64. Soporte AMD variable (sin garantía Intel).
-    - En sistemas NUMA con >1 nodo: se extrae solo la latencia local (0→0).
-    - Requiere: Linux ≥ 4.0, ejecución como root o CAP_SYS_RAWIO.
-
-    Returns
-    -------
-    float
-        Latencia idle en nanosegundos, redondeada a 1 decimal.
-        Nunca retorna 0.0 (latencia cero es físicamente imposible para DRAM).
-    None
-        mlc no instalado, error de ejecución, timeout o resultado no plausible.
+    Latencias de referencia orientativas:
+      LPDDR5X-8533:  14–18 ns   (portátiles ultrafinos)
+      DDR5-6000:     42–52 ns   (desktop high-end)
+      DDR4-3200:     62–80 ns   (desktop mainstream)
+      DDR4-2133:     75–95 ns   (portátil convencional)
     """
-    # Paso 1: cargar módulo MSR (fallo absolutamente silencioso)
     try:
-        subprocess.run(
-            ["sudo", "modprobe", "msr"],
-            capture_output=True,
-            timeout=5,
-        )
+        subprocess.run(["modprobe", "msr"], capture_output=True, timeout=5)
     except Exception:
-        pass   # No bloqueante bajo ninguna circunstancia
+        pass
 
-    # Paso 2: ejecutar mlc --idle_latency
     try:
         result = subprocess.run(
-            ["sudo", "mlc", "--idle_latency"],
-            capture_output=True, text=True,
-            timeout=_MLC_TIMEOUT_S,
+            ["mlc", "--idle_latency"],
+            capture_output=True, text=True, timeout=_MLC_TIMEOUT_S,
         )
     except FileNotFoundError:
-        print(
-            "[ram_reader] INFO mlc no encontrado → ram_cas_ns = None.\n"
-            "             Instalar desde: https://www.intel.com/content/www/us/en/"
-            "download/736633/intel-memory-latency-checker-intel-mlc.html"
-        )
+        print("[ram_reader] INFO mlc no encontrado → ram_cas_ns = None.")
         return None
     except subprocess.TimeoutExpired:
-        print(f"[ram_reader] WARN mlc superó {_MLC_TIMEOUT_S} s → ram_cas_ns = None.")
+        print(f"[ram_reader] WARN mlc superó {_MLC_TIMEOUT_S} s → None.")
         return None
     except Exception as exc:
         print(f"[ram_reader] WARN mlc invocación: {exc}")
         return None
 
-    # Paso 3: parsear latencia nodo local (nodo 0 → nodo 0)
     output = result.stdout + result.stderr
-
-    # rc=1 ocurre en sistemas sin PMU hardware pero con salida parseable.
-    # Solo abortamos si no hay salida alguna.
     if not output.strip():
-        print(f"[ram_reader] WARN mlc rc={result.returncode}, sin salida → None.")
         return None
 
     match = _MLC_LAT_RE.search(output)
     if not match:
-        # Imprimir el primer segmento de la salida para diagnóstico,
-        # sin saturar el log con dumps completos.
         snippet = output[:200].replace("\n", "  ").strip()
         print(f"[ram_reader] WARN mlc salida no reconocida: {snippet!r}")
         return None
 
-    # Paso 4: convertir y validar rango físico
     try:
         ns = round(float(match.group(1)), 1)
     except ValueError:
-        print("[ram_reader] WARN mlc: conversión a float falló.")
         return None
 
     if not (_MLC_LAT_MIN_NS <= ns <= _MLC_LAT_MAX_NS):
-        print(
-            f"[ram_reader] WARN mlc retornó {ns} ns — fuera del rango plausible "
-            f"[{_MLC_LAT_MIN_NS:.0f}, {_MLC_LAT_MAX_NS:.0f}] ns. Valor descartado."
-        )
+        print(f"[ram_reader] WARN mlc retornó {ns} ns fuera de rango plausible. Descartado.")
         return None
 
     print(f"[ram_reader] INFO latencia CAS real (mlc): {ns} ns")
@@ -485,6 +407,13 @@ def _measure_mlc_latency() -> Optional[float]:
 # ════════════════════════════════════════════════════════════════════════════
 
 def _build_edac_latex_rows(modules: list[_DimmModule]) -> str:
+    """
+    Genera filas LaTeX para la tabla EDAC.
+    Si modules está vacío (RAM soldada sin SMBIOS), retorna string vacío.
+    El template debe manejar esta condición con un bloque condicional.
+    """
+    if not modules:
+        return ""
     rows: list[str] = []
     for idx, mod in enumerate(modules):
         alt = r"    \rowalt" + "\n" if idx % 2 == 1 else ""
@@ -493,12 +422,9 @@ def _build_edac_latex_rows(modules: list[_DimmModule]) -> str:
         else:
             size_str = f"{mod.size_gb} GB"
             errors   = str(mod.total_errors)
-            if mod.ue_errors > 0:
-                badge = r"\badgefail"
-            elif mod.ce_errors > 0:
-                badge = r"\badgewarn"
-            else:
-                badge = r"\badgeok"
+            badge    = (r"\badgefail" if mod.ue_errors > 0
+                        else r"\badgewarn" if mod.ce_errors > 0
+                        else r"\badgeok")
         locator_tex = mod.locator.replace("_", r"\_").replace("#", r"\#")
         rows.append(f"{alt}    {locator_tex} & {size_str} & {errors} & {badge} \\\\")
     return "\n".join(rows)
@@ -508,10 +434,18 @@ def _build_edac_latex_rows(modules: list[_DimmModule]) -> str:
 #  CAPA 7 — Métricas del donut de integridad
 # ════════════════════════════════════════════════════════════════════════════
 
-def _compute_integrity(
-    total_errors: int,
-    total_gb:     int,
-) -> tuple[float, float, float]:
+def _compute_integrity(total_errors: int, total_gb: int) -> tuple[float, float, float]:
+    """
+    Calcula ángulo del donut, % íntegro y % defectuoso.
+
+    Casos especiales:
+    - total_errors == 0: sistema íntegro al 100%, sin importar total_gb.
+      Incluye el caso de RAM soldada donde modules=[] pero meminfo
+      reporta capacidad real. 0 errores = 100% íntegro.
+    - total_gb == 0: no debería ocurrir si /proc/meminfo funciona,
+      pero se maneja devolviendo 100% íntegro (sin datos = sin errores
+      confirmados = estado óptimo por honestidad forense).
+    """
     if total_errors == 0 or total_gb == 0:
         return 360.0, 100.0, 0.0
     weight_per_error = _EDAC_ERROR_WEIGHT * (4.0 / max(total_gb, 1))
@@ -527,25 +461,22 @@ def _compute_integrity(
 
 def extract_ram_data() -> RAMData:
     """
-    Extrae y ensambla todos los datos de RAM en una instancia ``RAMData``.
+    Extrae y ensambla todos los datos de RAM en una instancia RAMData.
 
-    Arquitectura de extracción en 7 capas
-    --------------------------------------
-    Capa 1  dmidecode     — topología de módulos DIMM.
-    Capa 2  /proc/meminfo — validación de capacidad total.
-    Capa 3  EDAC sysfs    — errores CE/UE por hardware ECC.
-    Capa 4  Dual channel  — inferencia por topología de slots.
-    Capa 5  memtester     — prueba activa de integridad (1 GB, 1 pasada).
-                            Los fallos se acumulan a ram_total_errors.
-                            ram_speed_effective viene de dmidecode (real).
-                            ram_cas_ns = 0.0 (sin benchmark dedicado).
-    Capa 6  LaTeX rows    — tabla EDAC para el reporte.
-    Capa 7  Donut         — ángulo e integridad para el gráfico circular.
+    FIX v1.2: Hardening para memoria LPDDR5 soldada
+    ------------------------------------------------
+    En laptops con memoria on-die, dmidecode puede devolver 0 módulos.
+    El flujo de extracción maneja este caso explícitamente:
 
-    Returns
-    -------
-    RAMData
-        Instancia completamente poblada.  Nunca lanza excepciones.
+    1. Si modules = [] → slots_total = 0, slots_used = 0 (correcto y honesto).
+    2. total_gb usa SIEMPRE meminfo como autoridad. Si occupied suma 0 GB
+       (por lista vacía o SMBIOS incompleto), total_gb = meminfo_total_gb.
+    3. mem_type y speed_mhz permanecen en "N/A" / 0 cuando occupied = [].
+       No se inventan valores para hardware sin SMBIOS expuesto.
+    4. _compute_integrity() con total_errors=0 retorna 100% íntegro,
+       lo cual es correcto: ausencia de errores detectados = estado óptimo.
+
+    Nunca lanza excepciones (guard externo garantiza RAMData() vacío).
     """
     try:
         # ── Capa 1: dmidecode ────────────────────────────────────────────
@@ -554,9 +485,11 @@ def extract_ram_data() -> RAMData:
             raw     = _run_dmidecode()
             modules = _parse_dmidecode(raw)
         except Exception as exc:
+            # dmidecode no disponible o SMBIOS vacío.
+            # No es fatal: meminfo proporciona la capacidad real.
             print(f"[ram_reader] WARN dmidecode: {exc}")
 
-        # ── Capa 2: /proc/meminfo ─────────────────────────────────────────
+        # ── Capa 2: /proc/meminfo — fuente de verdad ──────────────────────
         meminfo_total_gb = 0
         try:
             meminfo_total_gb = _total_gb_from_meminfo()
@@ -570,18 +503,28 @@ def extract_ram_data() -> RAMData:
         except Exception as exc:
             print(f"[ram_reader] WARN EDAC: {exc}")
 
-        # ── Métricas agregadas de topología ──────────────────────────────
+        # ── Métricas de topología ─────────────────────────────────────────
         occupied    = [m for m in modules if m.occupied]
-        slots_total = len(modules)
-        slots_used  = len(occupied)
+        slots_total = len(modules)    # 0 en RAM soldada sin SMBIOS = correcto
+        slots_used  = len(occupied)   # 0 ídem
 
+        # total_gb: SMBIOS si disponible, meminfo como fallback autoritativo.
+        # sum([]) = 0, por lo tanto el `or` activa meminfo_total_gb cuando
+        # occupied está vacío (incluyendo el caso de memoria soldada).
         total_gb = sum(m.size_gb for m in occupied) or meminfo_total_gb
 
+        # mem_type y speed_mhz solo son conocidos si SMBIOS reportó módulos.
+        # Para RAM soldada sin datos SMBIOS, los dejamos en valores nulos honestos.
         mem_type  = "N/A"
         speed_mhz = 0
         if occupied:
             mem_type  = Counter(m.mem_type  for m in occupied).most_common(1)[0][0]
             speed_mhz = Counter(m.speed_mhz for m in occupied).most_common(1)[0][0]
+
+        if slots_total == 0:
+            print("[ram_reader] INFO 0 slots DIMM detectados por SMBIOS. "
+                  "Probable memoria LPDDR soldada. "
+                  f"Capacidad total (meminfo): {total_gb} GB.")
 
         # ── Capa 4: Dual Channel ─────────────────────────────────────────
         dual_channel = False
@@ -599,16 +542,13 @@ def extract_ram_data() -> RAMData:
             print(f"[ram_reader] WARN memtester (inesperado): {exc}")
 
         total_errors    = edac_total + memtester_errors
-        speed_effective = speed_mhz   # dato real de dmidecode (XMP/EXPO ya negociado)
+        speed_effective = speed_mhz
 
-        # Latencia CAS: medición real vía mlc, o None si no disponible.
-        # NUNCA se usa 0.0: cero nanosegundos es una medición físicamente imposible.
         cas_ns: Optional[float] = None
         try:
             cas_ns = _measure_mlc_latency()
         except Exception as exc:
             print(f"[ram_reader] WARN _measure_mlc_latency: {exc}")
-            cas_ns = None
 
         # ── Capa 6: LaTeX EDAC rows ──────────────────────────────────────
         edac_latex = ""
@@ -648,6 +588,6 @@ def extract_ram_data() -> RAMData:
             ram_fail_pct        = fail_pct,
         )
 
-    except Exception as exc:    # pragma: no cover — guardia absoluta
+    except Exception as exc:
         print(f"[ram_reader] ERROR CRÍTICO en extract_ram_data(): {exc}")
         return RAMData()

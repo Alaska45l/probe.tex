@@ -202,7 +202,7 @@ def render_pdf(outdir: Path | None = None) -> None:
     # Número de serie de la placa base vía DMI
     runtime_log("DMI: Extracting host metadata and motherboard serial...")
     try:
-        sn_raw = subprocess.run(["sudo", "dmidecode", "-s", "system-serial-number"], 
+        sn_raw = subprocess.run(["dmidecode", "-s", "system-serial-number"], 
                                 capture_output=True, text=True, timeout=2).stdout.strip()
         serial_number = sn_raw if sn_raw else "Desconocido"
     except Exception:
