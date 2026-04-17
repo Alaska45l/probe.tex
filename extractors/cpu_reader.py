@@ -51,6 +51,7 @@ stdlib únicamente: subprocess, json, re, pathlib, datetime, threading, time.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import threading
@@ -61,6 +62,8 @@ from typing import Final, Optional
 
 from core.models import CPUData
 from tui import runtime_log
+
+_log = logging.getLogger(__name__)
 
 # ════════════════════════════════════════════════════════════════════════════
 #  CONSTANTES
@@ -399,18 +402,18 @@ def _active_thermal_test(tjmax: int) -> tuple[float, float, float, float, str]:
         proc.wait(timeout=_STRESS_DURATION_S + 10)
         stress_ok = True
     except FileNotFoundError:
-        print("[cpu_reader] WARN stress-ng no encontrado. Prueba activa omitida.")
+        _log.warning("stress-ng not installed — active thermal test skipped")
     except subprocess.TimeoutExpired:
         if proc is not None:
             proc.kill()
-        print("[cpu_reader] WARN stress-ng excedió el timeout; proceso terminado.")
+        _log.warning("stress-ng exceeded timeout — process killed")
     except Exception as exc:
         if proc is not None:
             try:
                 proc.kill()
             except Exception:
                 pass
-        print(f"[cpu_reader] WARN stress-ng: {exc}")
+        _log.warning("stress-ng unexpected error: %s", exc)
 
     if not stress_ok:
         # Sin carga real → devolver datos idle y abortar el hilo.
@@ -455,9 +458,9 @@ def _active_thermal_test(tjmax: int) -> tuple[float, float, float, float, str]:
                 recovered = True
                 break
         if not recovered and temps[peak_idx] > t_idle + 5.0:
-            # El pico existió y la CPU no volvió a baseline en la ventana de enfriamiento.
+            # El pico existió y la CPU no volvió a baseline en la ventana.
             recovery_time = _RECOVERY_NOT_ACHIEVED
-            print("[cpu_reader] WARN CPU no recuperó temperatura base en ventana de enfriamiento.")
+            _log.warning("CPU did not recover to baseline temperature within cooling window")
 
     coords = " ".join(f"({s},{t})" for s, t in samples)
     return t_idle, t_max, delta_t, recovery_time, coords
@@ -566,8 +569,7 @@ def _build_pstates(max_mhz: int, min_mhz: int) -> dict:
 
         driver = _detect_pstate_driver()
         if driver not in ("acpi-cpufreq", "unknown"):
-            print(f"[cpu_reader] INFO P-state driver: {driver} "
-                  "(scaling_cur_freq disponible para muestreo sostenido)")
+            _log.info("P-state driver: %s (scaling_cur_freq available)", driver)
     except Exception:
         pass
 
@@ -726,7 +728,7 @@ def extract_cpu_data() -> CPUData:
             lscpu = _extract_lscpu()
             cpu_model, cpu_cores, cpu_threads, max_mhz, min_mhz = _identity_from_lscpu(lscpu)
         except Exception as exc:
-            print(f"[cpu_reader] WARN lscpu: {exc}")
+            _log.warning("lscpu extraction failed: %s", exc)
 
         # ── Capa 2: dmidecode ────────────────────────────────────────────
         cpu_socket = "Desconocido"
@@ -764,8 +766,7 @@ def extract_cpu_data() -> CPUData:
                 _active_thermal_test(tjmax)
             )
         except Exception as exc:
-            print(f"[cpu_reader] WARN _active_thermal_test: {exc}")
-            # Fallback: mantener datos idle.
+            _log.warning("_active_thermal_test failed: %s — using idle baseline", exc)
             t_idle = t_idle_baseline
             t_max  = t_idle_baseline
 
@@ -847,5 +848,5 @@ def extract_cpu_data() -> CPUData:
         )
 
     except Exception as exc:    # pragma: no cover — última línea de defensa
-        print(f"[cpu_reader] ERROR CRÍTICO en extract_cpu_data(): {exc}")
+        _log.error("extract_cpu_data() critical failure: %s", exc)
         return CPUData()

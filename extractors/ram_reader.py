@@ -40,6 +40,7 @@ Intel MLC            → latencia idle DRAM (opcional, best-effort)
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from collections import Counter
@@ -49,6 +50,8 @@ from typing import Final, Optional
 
 from core.models import RAMData
 from tui import runtime_log
+
+_log = logging.getLogger(__name__)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -308,11 +311,10 @@ def _compute_memtester_size() -> str:
             free_kb   = int(m.group(1))
             target_mb = int(free_kb / 1024 * _MEMTESTER_FREE_PCT)
             clamped   = max(_MEMTESTER_MIN_MB, min(_MEMTESTER_MAX_MB, target_mb))
-            print(f"[ram_reader] INFO memtester: {clamped} MB "
-                  f"(10% de {free_kb // 1024} MB disponibles)")
+            _log.info("memtester: %d MB (10%% of %d MB available)", clamped, free_kb // 1024)
             return f"{clamped}M"
     except Exception as exc:
-        print(f"[ram_reader] WARN _compute_memtester_size: {exc} → fallback 64M")
+        _log.warning("_compute_memtester_size: %s → fallback 64M", exc)
     return f"{_MEMTESTER_MIN_MB}M"
 
 
@@ -331,14 +333,14 @@ def _run_memtester() -> int:
         output   = result.stdout + result.stderr
         failures = len(re.findall(r"\bFAILURE\b", output, re.IGNORECASE))
         if failures:
-            print(f"[ram_reader] memtester detectó {failures} fallo(s).")
+            _log.info("[ram_reader] memtester detectó %s fallo(s).", failures)
         return failures
     except FileNotFoundError:
-        print("[ram_reader] WARN memtester no encontrado. Prueba activa omitida.")
+        _log.warning("memtester no encontrado. Prueba activa omitida.")
     except subprocess.TimeoutExpired:
-        print(f"[ram_reader] WARN memtester superó {_MEMTESTER_TIMEOUT_S} s.")
+        _log.warning("memtester superó %s s.", _MEMTESTER_TIMEOUT_S)
     except Exception as exc:
-        print(f"[ram_reader] WARN memtester: {exc}")
+        _log.warning("memtester: %s", exc)
     return 0
 
 
@@ -370,13 +372,13 @@ def _measure_mlc_latency() -> Optional[float]:
             capture_output=True, text=True, timeout=_MLC_TIMEOUT_S,
         )
     except FileNotFoundError:
-        print("[ram_reader] INFO mlc no encontrado → ram_cas_ns = None.")
+        _log.info("mlc no encontrado → ram_cas_ns = None.")
         return None
     except subprocess.TimeoutExpired:
-        print(f"[ram_reader] WARN mlc superó {_MLC_TIMEOUT_S} s → None.")
+        _log.warning("mlc superó %s s → None.", _MLC_TIMEOUT_S)
         return None
     except Exception as exc:
-        print(f"[ram_reader] WARN mlc invocación: {exc}")
+        _log.warning("mlc invocación: %s", exc)
         return None
 
     output = result.stdout + result.stderr
@@ -386,7 +388,7 @@ def _measure_mlc_latency() -> Optional[float]:
     match = _MLC_LAT_RE.search(output)
     if not match:
         snippet = output[:200].replace("\n", "  ").strip()
-        print(f"[ram_reader] WARN mlc salida no reconocida: {snippet!r}")
+        _log.warning("mlc output unrecognized: %r", snippet)
         return None
 
     try:
@@ -395,10 +397,10 @@ def _measure_mlc_latency() -> Optional[float]:
         return None
 
     if not (_MLC_LAT_MIN_NS <= ns <= _MLC_LAT_MAX_NS):
-        print(f"[ram_reader] WARN mlc retornó {ns} ns fuera de rango plausible. Descartado.")
+        _log.warning("mlc retornó %s ns fuera de rango plausible. Descartado.", ns)
         return None
 
-    print(f"[ram_reader] INFO latencia CAS real (mlc): {ns} ns")
+    _log.info("latencia CAS real (mlc): %s ns", ns)
     return ns
 
 
@@ -487,7 +489,7 @@ def extract_ram_data() -> RAMData:
         except Exception as exc:
             # dmidecode no disponible o SMBIOS vacío.
             # No es fatal: meminfo proporciona la capacidad real.
-            print(f"[ram_reader] WARN dmidecode: {exc}")
+            _log.warning("dmidecode: %s", exc)
 
         # ── Capa 2: /proc/meminfo — fuente de verdad ──────────────────────
         meminfo_total_gb = 0
@@ -501,7 +503,7 @@ def extract_ram_data() -> RAMData:
             edac_errors = _read_edac_errors()
             _assign_edac_to_dimms(modules, edac_errors)
         except Exception as exc:
-            print(f"[ram_reader] WARN EDAC: {exc}")
+            _log.warning("EDAC: %s", exc)
 
         # ── Métricas de topología ─────────────────────────────────────────
         occupied    = [m for m in modules if m.occupied]
@@ -522,9 +524,11 @@ def extract_ram_data() -> RAMData:
             speed_mhz = Counter(m.speed_mhz for m in occupied).most_common(1)[0][0]
 
         if slots_total == 0:
-            print("[ram_reader] INFO 0 slots DIMM detectados por SMBIOS. "
-                  "Probable memoria LPDDR soldada. "
-                  f"Capacidad total (meminfo): {total_gb} GB.")
+            _log.info(
+                "0 DIMM slots detected via SMBIOS — probable soldered LPDDR. "
+                "Total capacity from meminfo: %d GB",
+                total_gb,
+            )
 
         # ── Capa 4: Dual Channel ─────────────────────────────────────────
         dual_channel = False
@@ -539,7 +543,7 @@ def extract_ram_data() -> RAMData:
         try:
             memtester_errors = _run_memtester()
         except Exception as exc:
-            print(f"[ram_reader] WARN memtester (inesperado): {exc}")
+            _log.warning("memtester (inesperado): %s", exc)
 
         total_errors    = edac_total + memtester_errors
         speed_effective = speed_mhz
@@ -548,14 +552,14 @@ def extract_ram_data() -> RAMData:
         try:
             cas_ns = _measure_mlc_latency()
         except Exception as exc:
-            print(f"[ram_reader] WARN _measure_mlc_latency: {exc}")
+            _log.warning("_measure_mlc_latency: %s", exc)
 
         # ── Capa 6: LaTeX EDAC rows ──────────────────────────────────────
         edac_latex = ""
         try:
             edac_latex = _build_edac_latex_rows(modules)
         except Exception as exc:
-            print(f"[ram_reader] WARN LaTeX rows: {exc}")
+            _log.warning("LaTeX rows: %s", exc)
 
         # ── Capa 7: Donut de integridad ───────────────────────────────────
         pie_angle = 360.0
@@ -589,5 +593,5 @@ def extract_ram_data() -> RAMData:
         )
 
     except Exception as exc:
-        print(f"[ram_reader] ERROR CRÍTICO en extract_ram_data(): {exc}")
+        _log.error("CRÍTICO en extract_ram_data(): %s", exc)
         return RAMData()

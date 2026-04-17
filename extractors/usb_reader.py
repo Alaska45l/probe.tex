@@ -58,6 +58,7 @@ from core.models import USBData
 #  CONSTANTES
 # ════════════════════════════════════════════════════════════════════════════
 
+import logging
 _LSUSB_TIMEOUT:  int = 5
 _SYSFS_TIMEOUT:  int = 3
 
@@ -416,7 +417,7 @@ def extract_usb_data() -> USBData:
             ports    = _parse_lsusb_tree(raw_tree)
             lsusb_ok = True
         except Exception as exc:
-            print(f"[usb_reader] WARN lsusb -t falló: {exc}")
+            _log.warning("lsusb -t falló: %s", exc)
 
         # ── Capa 2: errores sysfs por puerto ─────────────────────────────
         if lsusb_ok:
@@ -431,7 +432,7 @@ def extract_usb_data() -> USBData:
         try:
             tabla_latex = _build_usb_latex_rows(ports)
         except Exception as exc:
-            print(f"[usb_reader] WARN LaTeX rows: {exc}")
+            _log.warning("LaTeX rows: %s", exc)
             tabla_latex = r"    N/A & N/A & N/A & N/A & N/A & \badgeinfo \\"
 
         # ── Capa 4: resumen ───────────────────────────────────────────────
@@ -449,5 +450,5 @@ def extract_usb_data() -> USBData:
         )
 
     except Exception as exc:   # pragma: no cover — guardia absoluta
-        print(f"[usb_reader] ERROR CRÍTICO en extract_usb_data(): {exc}")
+        _log.error("CRÍTICO en extract_usb_data(): %s", exc)
         return USBData()

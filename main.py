@@ -1,18 +1,81 @@
+"""
+main.py — probe.tex entry point
+================================
+INVARIANT Hardware Forensic Diagnostic — Ring-0 Edition
+
+Arquitectura de orquestación
+-----------------------------
+1. ``verify_license()``        → gate criptográfico Ed25519 (fail-closed).
+2. ``_enumerate_storage_devices()`` → lsblk, NVMe primero, SATA después.
+3. ``ThreadPoolExecutor``      → extractores ligeros en paralelo (no-I/O).
+4. ``extract_cpu_data()``      → stress-ng + muestreo térmico (secuencial).
+5. ``extract_gpu_data()``      → sensores PCIe (secuencial).
+6. ``evaluate_system_entropy()``→ motor de puntuación y badges.
+7. Jinja2 + tectonic           → PDF forense, offline, caché pre-cargada.
+
+DIRECTIVA CRÍTICA — LaTeX / tectonic (NO MODIFICAR)
+----------------------------------------------------
+El motor de renderizado usa **tectonic** con el flag ``--cache-dir`` apuntando
+al directorio de caché offline pre-inyectado en la ISO:
+
+    /root/.cache/Tectonic
+
+Esta decisión es arquitectónica e intencional para mantener la ISO < 1 GB.
+El sistema opera en entorno air-gapped; tectonic NO debe intentar conexión a
+internet ni descargar paquetes en tiempo de ejecución.
+
+Bajo ninguna circunstancia debe modificarse para:
+  - Instalar texlive-most / texlive-core.
+  - Omitir ``--cache-dir``.
+  - Requerir conectividad de red.
+"""
+from __future__ import annotations
+
 import argparse
 import json
+import logging
 import os
+import subprocess
 import sys
 import time
 import platform
-import subprocess
 import concurrent.futures
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Final
+
 import jinja2
+from markupsafe import Markup
+
+
+# ── LaTeX sanitization for Jinja2 finalize callback ──────────────────────────
+# All values interpolated into .tex templates pass through this function.
+# Values wrapped in markupsafe.Markup (pre-safe LaTeX like \badgeok or pgfplots
+# coordinates) bypass escaping. All other values (DMI strings, serial numbers,
+# model names from hardware) are escaped to prevent LaTeX injection from
+# hostile BIOS fields (e.g. \input{/etc/shadow} as a motherboard serial).
+
+def _tex_escape(value: object) -> str:
+    """Escape TeX-active characters, except values marked as Markup (pre-safe)."""
+    if isinstance(value, Markup):
+        return str(value)
+    s = str(value)
+    # Order matters: backslash first to avoid double-escaping.
+    s = s.replace('\\', r'\textbackslash{}')
+    s = s.replace('{',  r'\{')
+    s = s.replace('}',  r'\}')
+    s = s.replace('$',  r'\$')
+    s = s.replace('&',  r'\&')
+    s = s.replace('#',  r'\#')
+    s = s.replace('%',  r'\%')
+    s = s.replace('_',  r'\_')
+    s = s.replace('^',  r'\^{}')
+    s = s.replace('~',  r'\~{}')
+    return s
 
 from core.models import (
-    DiagnosticReport, ReportMetadata, GlobalSummary,
-    StorageData, NVMeData, RAMData, MotherboardData, USBData, BatteryData
+    DiagnosticReport, ReportMetadata,
+    StorageData, RAMData, MotherboardData, USBData, BatteryData,
 )
 from core.entropy import evaluate_system_entropy
 from core.license_verifier import verify_license, LicenseError
@@ -24,6 +87,30 @@ from extractors.gpu_reader import extract_gpu_data
 from extractors.usb_reader import extract_usb_data
 from extractors.battery_reader import extract_battery_data
 from tui import run_tui, runtime_log
+
+# ── Logging estructurado — silencioso ante el usuario final ──────────────────
+# Los mensajes van a un archivo de log en /tmp (o INVARIANT_LOG si existe).
+# Nunca se imprimen en stdout.
+
+_LOG_FILE: Final[Path] = Path(os.environ.get("INVARIANT_LOG", "/tmp/probe_tex.log"))
+_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(
+    level    = logging.DEBUG,
+    format   = "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers = [logging.FileHandler(_LOG_FILE, encoding="utf-8")],
+)
+
+_log = logging.getLogger(__name__)
+
+# Directorio de caché offline de tectonic — pre-inyectado en la ISO.
+# Cambiar SOLO si la ruta de inyección del forge.sh cambia.
+_TECTONIC_CACHE_DIR: Final[Path] = Path("/root/.cache/Tectonic")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  HELPERS INTERNOS
+# ════════════════════════════════════════════════════════════════════════════
 
 def _enumerate_storage_devices() -> list[str]:
     """
@@ -38,7 +125,7 @@ def _enumerate_storage_devices() -> list[str]:
 
     Fallback
     --------
-    Si lsblk falla o no devuelve dispositivos válidos, se retorna
+    Si lsblk falla o no devuelve dispositivos válidos, retorna
     ['/dev/nvme0n1'] como último recurso conservador.
 
     Returns
@@ -52,7 +139,7 @@ def _enumerate_storage_devices() -> list[str]:
             ["lsblk", "-J", "-o", "NAME,TYPE,TRAN"],
             capture_output=True, text=True, timeout=5,
         ).stdout
-        data    = json.loads(out)
+        data       = json.loads(out)
         nvme_devs: list[str] = []
         sata_devs: list[str] = []
 
@@ -68,13 +155,13 @@ def _enumerate_storage_devices() -> list[str]:
 
         devices = nvme_devs + sata_devs
         if devices:
-            print(f"[main] INFO dispositivos de almacenamiento detectados: {devices}")
+            _log.info("Block devices detected: %s", devices)
             return devices
 
     except Exception as exc:
-        print(f"[main] WARN _enumerate_storage_devices: {exc}")
+        _log.warning("_enumerate_storage_devices failed: %s", exc)
 
-    print("[main] WARN enumeración fallida. Fallback a /dev/nvme0n1.")
+    _log.warning("Device enumeration failed — falling back to /dev/nvme0n1")
     return ["/dev/nvme0n1"]
 
 
@@ -99,42 +186,58 @@ def _extract_all_drives(devices: list[str]) -> list[StorageData]:
     results: list[StorageData] = []
     for dev in devices:
         try:
-            print(f"[main] INFO extrayendo almacenamiento: {dev}")
+            _log.info("Extracting storage data: %s", dev)
             results.append(extract_disk_data(dev))
         except Exception as exc:
-            print(f"[main] WARN extract_disk_data({dev}): {exc}. "
-                  "Insertando StorageData() vacío.")
+            _log.warning("extract_disk_data(%s) failed: %s — inserting empty StorageData", dev, exc)
             results.append(StorageData())
     return results if results else [StorageData()]
 
+
 def _resolve_outdir(args_outdir: str | None) -> Path:
+    """
+    Resuelve el directorio de salida con verificación de escritura.
+
+    Prioridad: argumento CLI → $INVARIANT_OUT → cwd → /tmp.
+    """
     if args_outdir:
         p = Path(args_outdir)
     elif "INVARIANT_OUT" in os.environ:
         p = Path(os.environ["INVARIANT_OUT"])
     else:
-        p = Path.cwd()  # PRIMERO intenta usar la carpeta actual
+        p = Path.cwd()
 
     test_file = p / ".invariant_write_test"
     try:
         test_file.touch()
         test_file.unlink()
+        _log.info("Output directory resolved: %s", p)
         return p
     except Exception:
-        print(f"[main] WARN No se puede escribir en {p}. Cayendo a /tmp.")
+        _log.warning("Cannot write to %s — falling back to /tmp", p)
         return Path("/tmp")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  RENDERIZACIÓN DE REPORTE FORENSE
+# ════════════════════════════════════════════════════════════════════════════
 
 def render_pdf(outdir: Path | None = None) -> None:
     """
-    outdir: directorio de salida para .tex y .pdf.
-            Si None → /tmp (Live OS safe).
+    Orquesta la extracción de hardware, la evaluación de entropía y la
+    compilación del PDF forense mediante tectonic (offline, air-gapped).
+
+    Parameters
+    ----------
+    outdir:
+        Directorio de salida para .tex y .pdf.
+        Si None → /tmp (Live OS safe).
     """
-    runtime_log("Ring-0: Iniciando barrido concurrente de hardware...")
+    runtime_log("Ring-0: Initiating concurrent hardware sweep...")
     start_time = time.time()
 
-    # ── NUEVO: enumerar discos ANTES de lanzar el ThreadPoolExecutor ──────
-    # La enumeración es rápida (lsblk ~50 ms) y nos permite calcular el
-    # timeout de disco dinámicamente según el número de unidades.
+    # Enumerar discos antes del ThreadPoolExecutor (rápido, ~50 ms).
+    # Permite calcular el timeout de disco dinámicamente.
     devices      = _enumerate_storage_devices()
     disk_timeout = max(130, 130 * len(devices))   # 130 s por unidad
 
@@ -148,77 +251,60 @@ def render_pdf(outdir: Path | None = None) -> None:
         "gpu":  45,
     }
 
-    # FASE 1: extractores sin carga activa (paralelos, seguros)
+    # ── FASE 1: extractores sin carga activa (paralelos, seguros) ────────────
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        # ── CAMBIADO: future único que extrae TODOS los discos ────────────
         runtime_log("Storage: Enumerating physical block devices...")
         future_disk = executor.submit(_extract_all_drives, devices)
-        runtime_log("RAM: Analizando topología y lanzando memtester...")
+
+        runtime_log("RAM: Analyzing topology and launching memtester...")
         future_ram  = executor.submit(extract_ram_data)
         future_mobo = executor.submit(extract_motherboard_data)
         future_usb  = executor.submit(extract_usb_data)
         future_bat  = executor.submit(extract_battery_data)
 
-        # ── CAMBIADO: resultado es list[StorageData] ──────────────────────
-        try:
-            storage_drives: list[StorageData] = future_disk.result(
-                timeout=_TIMEOUTS["disk"]
-            )
-        except concurrent.futures.TimeoutError:
-            print("[main] WARN extractor disk superó timeout. "
-                  "Usando [StorageData()] vacío.")
-            storage_drives = [StorageData()]
+        def _safe_result(future: concurrent.futures.Future, label: str, fallback):  # type: ignore[type-arg]
+            try:
+                return future.result(timeout=_TIMEOUTS[label])
+            except concurrent.futures.TimeoutError:
+                _log.warning("Extractor '%s' exceeded timeout — using empty fallback", label)
+                return fallback
 
-        try:
-            ram_data = future_ram.result(timeout=_TIMEOUTS["ram"])
-        except concurrent.futures.TimeoutError:
-            print("[main] WARN extractor ram superó timeout.")
-            ram_data = RAMData()
-        try:
-            mobo_data = future_mobo.result(timeout=_TIMEOUTS["mobo"])
-        except concurrent.futures.TimeoutError:
-            print("[main] WARN extractor mobo superó timeout.")
-            mobo_data = MotherboardData()
-        try:
-            usb_data = future_usb.result(timeout=_TIMEOUTS["usb"])
-        except concurrent.futures.TimeoutError:
-            print("[main] WARN extractor usb superó timeout.")
-            usb_data = USBData()
-        try:
-            bat_data = future_bat.result(timeout=_TIMEOUTS["bat"])
-        except concurrent.futures.TimeoutError:
-            print("[main] WARN extractor bat superó timeout.")
-            bat_data = BatteryData()
+        storage_drives: list[StorageData] = _safe_result(future_disk, "disk", [StorageData()])
+        ram_data  = _safe_result(future_ram,  "ram",  RAMData())
+        mobo_data = _safe_result(future_mobo, "mobo", MotherboardData())
+        usb_data  = _safe_result(future_usb,  "usb",  USBData())
+        bat_data  = _safe_result(future_bat,  "bat",  BatteryData())
 
-    runtime_log("CPU: Ejecutando perfilado térmico y de P-States...")
+    # ── FASE 2: extractores con carga activa (secuenciales por diseño) ───────
+    runtime_log("CPU: Running thermal profiling and P-State analysis...")
     cpu_data = extract_cpu_data()
 
-    runtime_log("GPU: Verificando sensores de Hotspot y enlace PCIe...")
+    runtime_log("GPU: Verifying Hotspot sensors and PCIe link...")
     gpu_data = extract_gpu_data()
 
-    end_time = time.time()
-    duracion_segundos = round(end_time - start_time, 1)
-    
-    runtime_log(f"Extraction sequence halted. Duration: {duracion_segundos}s.")
+    elapsed: float = round(time.time() - start_time, 1)
+    runtime_log(f"Extraction sequence halted. Duration: {elapsed}s.")
 
-    # Número de serie de la placa base vía DMI
+    # ── Metadatos del host ───────────────────────────────────────────────────
     runtime_log("DMI: Extracting host metadata and motherboard serial...")
     try:
-        sn_raw = subprocess.run(["dmidecode", "-s", "system-serial-number"], 
-                                capture_output=True, text=True, timeout=2).stdout.strip()
-        serial_number = sn_raw if sn_raw else "Desconocido"
-    except Exception:
+        sn_raw = subprocess.run(
+            ["dmidecode", "-s", "system-serial-number"],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        serial_number: str = sn_raw if sn_raw else "Desconocido"
+    except Exception as exc:
+        _log.warning("dmidecode serial-number failed: %s", exc)
         serial_number = "No accesible"
 
-    # Datos de SO y tiempo
-    kernel_version = platform.release()
-    fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    kernel_version: str = platform.release()
+    fecha_actual: str   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # ── CAMBIADO: parámetro renombrado nvme → storage_drives ─────────────
+    # ── Motor de entropía y puntuación ───────────────────────────────────────
     entropy_data = evaluate_system_entropy(
         cpu            = cpu_data,
         gpu            = gpu_data,
-        storage_drives = storage_drives,   # ← CAMBIADO
+        storage_drives = storage_drives,
         ram            = ram_data,
         mobo           = mobo_data,
         usb            = usb_data,
@@ -228,131 +314,212 @@ def render_pdf(outdir: Path | None = None) -> None:
     runtime_log("Assembling Ring-0 data contract...")
     report = DiagnosticReport(
         metadata=ReportMetadata(
-            report_id="INV-2026-001",
-            cliente_nombre="Taller Local Demo",
-            cliente_email="contacto@cliente.com",
-            cliente_telefono="+54 223 000-0000",
-            device_brand="ASUS",
-            device_model="Vivobook E1504FA",
-            serial_number=serial_number,
-            taller_nombre="Invariant Systems",
-            tecnico_nombre="Admin",
-            version="1.0.0",
-            kernel_version=kernel_version,
-            fecha_reporte=fecha_actual,
-            duracion_analisis=f"{duracion_segundos} s"
+            report_id          = "INV-2026-001",
+            cliente_nombre     = "Taller Local Demo",
+            cliente_email      = "contacto@cliente.com",
+            cliente_telefono   = "+54 223 000-0000",
+            device_brand       = "ASUS",
+            device_model       = "Vivobook E1504FA",
+            serial_number      = serial_number,
+            taller_nombre      = "Invariant Systems",
+            tecnico_nombre     = "Admin",
+            version            = "1.0.0",
+            kernel_version     = kernel_version,
+            fecha_reporte      = fecha_actual,
+            duracion_analisis  = f"{elapsed} s",
         ),
         cpu            = cpu_data,
         gpu            = gpu_data,
-        storage_drives = storage_drives,   # ← CAMBIADO (era nvme=disk_data)
+        storage_drives = storage_drives,
         ram            = ram_data,
         motherboard    = mobo_data,
         usb            = usb_data,
         battery        = bat_data,
     )
 
+    # ── Renderización Jinja2 → LaTeX ─────────────────────────────────────────
     runtime_log("Jinja2: Instantiating LaTeX rendering engine...")
     latex_env = jinja2.Environment(
-        block_start_string='[%', block_end_string='%]',
-        variable_start_string='<<', variable_end_string='>>',
-        comment_start_string='[#', comment_end_string='#]',
-        trim_blocks=True,
-        loader=jinja2.FileSystemLoader('renderer/templates')
+        block_start_string   = '[%',  block_end_string   = '%]',
+        variable_start_string= '<<',  variable_end_string= '>>',
+        comment_start_string = '[#',  comment_end_string = '#]',
+        trim_blocks  = True,
+        loader       = jinja2.FileSystemLoader('renderer/templates'),
+        finalize     = _tex_escape,
     )
 
     template = latex_env.get_template('reporte_base.tex')
-    context = report.to_jinja_context()
-    
-    # ── context.update(): las claves nvme_* siguen igual ─────────────────
-    # evaluate_system_entropy todavía expone entropy_data.nvme (SubsystemVector
-    # agregado), entropy_data.badge_nvme, entropy_data.accion_nvme, etc.
-    # El template de la Sección 7 los consume sin modificación.
+    context  = report.to_jinja_context()
+
+    # ── Mark pre-formatted LaTeX fields as safe (bypass _tex_escape) ──────
+    # These fields contain intentional LaTeX: pgfplots coordinates, table
+    # rows with \\ and &, badge macros like \badgeok, and item lists.
+    # All other fields (DMI strings, model names, serial numbers) will be
+    # escaped by _tex_escape to prevent LaTeX injection from hostile BIOS.
+    _LATEX_SAFE_KEYS: Final[frozenset[str]] = frozenset({
+        # pgfplots coordinate strings
+        "datos_cpu_temp", "datos_vrm_vid", "datos_vrm_medido",
+        # Pre-formatted LaTeX table rows
+        "mce_tabla_filas", "ram_edac_filas", "usb_tabla_filas",
+        # Badge macros (\badgeok, \badgefail, etc.)
+        "estado_global_badge", "badge_cpu", "badge_gpu", "badge_nvme",
+        "badge_ram", "badge_mobo", "badge_usb", "badge_global",
+        # Recommendation item list (LaTeX \item entries)
+        "lista_recomendaciones",
+    })
+    for key in _LATEX_SAFE_KEYS:
+        if key in context and isinstance(context[key], str):
+            context[key] = Markup(context[key])
+
+    # Claves de entropía — nvme_* son agrupadas (multi-disco aggregado).
+    # Badge and list fields from entropy are also LaTeX-safe.
     context.update({
-        "indice_anomalia":   entropy_data.total_delta_a,
-        "cpu_anomalia":      entropy_data.cpu.delta_a,
-        "gpu_anomalia":      entropy_data.gpu.delta_a,
-        "nvme_anomalia":     entropy_data.nvme.delta_a,     # agregado multi-disco
-        "ram_anomalia":      entropy_data.ram.delta_a,
-        "mobo_anomalia":     entropy_data.vrm.delta_a,
-        "usb_anomalia":      entropy_data.usb.delta_a,
-        "bat_anomalia":      entropy_data.battery.delta_a,
-        "cpu_estado_badge":  entropy_data.badge_cpu,
-        "gpu_estado_badge":  entropy_data.badge_gpu,
-        "nvme_estado_badge": entropy_data.badge_nvme,       # peor estado del conjunto
-        "ram_estado_badge":  entropy_data.badge_ram,
-        "mobo_estado_badge": entropy_data.badge_mobo,
-        "usb_estado_badge":  entropy_data.badge_usb,
-        "bat_estado_badge":  entropy_data.badge_bat,
-        "accion_cpu":        entropy_data.accion_cpu,
-        "accion_gpu":        entropy_data.accion_gpu,
-        "accion_nvme":       entropy_data.accion_nvme,
-        "accion_ram":        entropy_data.accion_ram,
-        "accion_mobo":       entropy_data.accion_mobo,
-        "accion_usb":        entropy_data.accion_usb,
-        "accion_bat":        entropy_data.accion_bat,
-        "accion_global":     entropy_data.accion_global,
-        "estado_global_badge":    entropy_data.estado_global_badge,
+        "indice_anomalia":        entropy_data.total_delta_a,
+        "cpu_anomalia":           entropy_data.cpu.delta_a,
+        "gpu_anomalia":           entropy_data.gpu.delta_a,
+        "nvme_anomalia":          entropy_data.nvme.delta_a,
+        "ram_anomalia":           entropy_data.ram.delta_a,
+        "mobo_anomalia":          entropy_data.vrm.delta_a,
+        "usb_anomalia":           entropy_data.usb.delta_a,
+        "bat_anomalia":           entropy_data.battery.delta_a,
+        "cpu_estado_badge":       Markup(entropy_data.badge_cpu),
+        "gpu_estado_badge":       Markup(entropy_data.badge_gpu),
+        "nvme_estado_badge":      Markup(entropy_data.badge_nvme),
+        "ram_estado_badge":       Markup(entropy_data.badge_ram),
+        "mobo_estado_badge":      Markup(entropy_data.badge_mobo),
+        "usb_estado_badge":       Markup(entropy_data.badge_usb),
+        "bat_estado_badge":       Markup(entropy_data.badge_bat),
+        "accion_cpu":             entropy_data.accion_cpu,
+        "accion_gpu":             entropy_data.accion_gpu,
+        "accion_nvme":            entropy_data.accion_nvme,
+        "accion_ram":             entropy_data.accion_ram,
+        "accion_mobo":            entropy_data.accion_mobo,
+        "accion_usb":             entropy_data.accion_usb,
+        "accion_bat":             entropy_data.accion_bat,
+        "accion_global":          entropy_data.accion_global,
+        "estado_global_badge":    Markup(entropy_data.estado_global_badge),
         "resumen_ejecutivo":      entropy_data.resumen_ejecutivo,
-        "lista_recomendaciones":  entropy_data.lista_recomendaciones,
+        "lista_recomendaciones":  Markup(entropy_data.lista_recomendaciones),
     })
 
     out      = outdir or Path("/tmp")
     tex_path = out / "reporte_generado.tex"
 
-    runtime_log(f"I/O: Writing generated TeX source to {tex_path.name}...")
-    tex_output = template.render(**context)
-    tex_path.write_text(tex_output, encoding="utf-8")
+    runtime_log(f"I/O: Writing TeX source → {tex_path.name}...")
+    tex_path.write_text(template.render(**context), encoding="utf-8")
 
-    runtime_log("Tectonic: Compilando reporte forense final...")
+    # ── Compilación tectonic (OFFLINE — caché pre-cargada) ───────────────────
+    # DIRECTIVA CRÍTICA: --cache-dir apunta al caché offline inyectado en la
+    # ISO. NO se añaden --keep-logs, --web, ni otras flags que requieran red.
+    runtime_log("Tectonic: Compiling forensic report (offline cache)...")
+    _log.info("tectonic: cache=%s tex=%s out=%s", _TECTONIC_CACHE_DIR, tex_path, out)
+
     try:
         subprocess.run(
-            ["tectonic", "--outdir", str(out), str(tex_path)],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,  # Capturamos el error
-            text=True
+            [
+                "tectonic",
+                "--cache-dir", str(_TECTONIC_CACHE_DIR),
+                "--outdir",    str(out),
+                str(tex_path),
+            ],
+            check  = True,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.PIPE,
+            text   = True,
+            timeout= 120,
         )
         pdf_path = out / "reporte_generado.pdf"
-        print(f"[+] ÉXITO: {pdf_path}")
+        _log.info("PDF compiled successfully: %s", pdf_path)
+        runtime_log(f"Report compiled → {pdf_path.name}")
     except FileNotFoundError:
-        raise RuntimeError("'tectonic' no encontrado. Instalar: sudo pacman -S tectonic")
-    except subprocess.CalledProcessError as e:
-        # Si Tectonic falla (ej. sin WiFi en Live OS), rompemos la sonda con el log
-        raise RuntimeError(f"Tectonic falló la compilación:\n{e.stderr}")
+        raise RuntimeError(
+            "tectonic binary not found in PATH. "
+            "Verify the ISO build included tectonic."
+        )
+    except subprocess.CalledProcessError as exc:
+        _log.error("tectonic compilation failed:\n%s", exc.stderr)
+        raise RuntimeError(
+            "LaTeX compilation failed. Check /tmp/probe_tex.log for details."
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("tectonic exceeded 120 s compilation timeout.")
 
-def renderizar_pantalla_roja_bloqueo(code: str) -> None:
-    """Muestra una pantalla roja de error y detiene la ejecución (Lockdown Brutalista)."""
-    print(f"\n\033[1;41;97m{' ' * 80}\033[0m")
-    print(f"\033[1;41;97m{' ' * 20}[!] SISTEMA BLOQUEADO - ERROR DE LICENCIA{' ' * 19}\033[0m")
-    print(f"\033[1;41;97m{' ' * 20}CÓDIGO: {code:<42}\033[0m")
-    print(f"\033[1;41;97m{' ' * 80}\033[0m\n")
-    sys.exit(1)  # Alternativa más agresiva: os.system("poweroff -f")
+
+# ════════════════════════════════════════════════════════════════════════════
+#  LOCKSCREEN DE LICENCIA — Renderizada via Rich (sin print())
+# ════════════════════════════════════════════════════════════════════════════
+
+def _render_license_lockscreen(code: str) -> None:
+    """
+    Muestra una pantalla de bloqueo en la terminal usando Rich y detiene
+    la ejecución. No usa print() — salida exclusivamente a Rich Console.
+
+    El error code se registra en el log antes de terminar.
+    """
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
+
+    _log.critical("LICENSE GATE TRIGGERED — code=%s", code)
+
+    console = Console(stderr=True)
+    console.print()
+
+    body = Text(justify="center")
+    body.append("\n  ◆  SISTEMA BLOQUEADO — LICENCIA INVÁLIDA  ◆\n\n", style="bold white")
+    body.append(f"  CÓDIGO DE ERROR:  {code}\n\n", style="white")
+    body.append(
+        "  Contacte a soporte técnico con el código anterior.\n"
+        "  probe.tex // Invariant Systems\n",
+        style="dim white",
+    )
+
+    console.print(
+        Panel(
+            body,
+            style        = "on dark_red",
+            border_style = "bright_red",
+            expand       = True,
+        )
+    )
+    console.print()
+    sys.exit(1)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  ENTRY POINT
+# ════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    # 1. Gate criptográfico — fail-closed
     try:
-        # 1. El Guardián en la puerta
         licencia = verify_license()
-    except LicenseError as e:
-        # 2. Lockdown Brutalista
-        renderizar_pantalla_roja_bloqueo(e.code)
+        _log.info(
+            "License validated: plan=%s hw=%s...%s expires=%s",
+            licencia.plan,
+            licencia.hardware_id[:8],
+            licencia.hardware_id[-8:],
+            datetime.fromtimestamp(licencia.expires_at, tz=timezone.utc).date().isoformat(),
+        )
+    except LicenseError as exc:
+        _render_license_lockscreen(exc.code)
 
-    # 3. Flujo normal: el sistema está desbloqueado
+    # 2. Argumentos CLI
     parser = argparse.ArgumentParser(
-        prog="probe.tex",
-        description="INVARIANT — Hardware Forensic Diagnostic",
+        prog        = "probe.tex",
+        description = "INVARIANT — Hardware Forensic Diagnostic (Ring-0)",
     )
     parser.add_argument(
         "--outdir",
-        metavar="PATH",
-        default=None,
-        help=(
-            "Directorio de salida para reporte_generado.pdf "
-            "(default: $INVARIANT_OUT o /tmp)"
+        metavar = "PATH",
+        default = None,
+        help    = (
+            "Output directory for reporte_generado.pdf "
+            "(default: $INVARIANT_OUT, then cwd, then /tmp)"
         ),
     )
-    args   = parser.parse_args()
+    args         = parser.parse_args()
     final_outdir = _resolve_outdir(args.outdir)
-    print(f"[main] INFO outdir: {final_outdir}")
 
-    # Pasamos final_outdir explícitamente a render_pdf
+    # 3. Diagnóstico forense dentro del TUI
     run_tui(lambda: render_pdf(final_outdir))

@@ -77,6 +77,7 @@ from core.models import BatteryData
 #  CONSTANTES
 # ════════════════════════════════════════════════════════════════════════════
 
+import logging
 _POWER_SUPPLY_ROOT: Path = Path("/sys/class/power_supply")
 
 # Longitud máxima del gauge TikZ en cm (constante del template LaTeX).
@@ -394,5 +395,5 @@ def extract_battery_data() -> BatteryData:
         )
 
     except Exception as exc:   # pragma: no cover — guardia absoluta
-        print(f"[battery_reader] ERROR CRÍTICO en extract_battery_data(): {exc}")
+        _log.error("CRÍTICO en extract_battery_data(): %s", exc)
         return BatteryData(battery_present=False)

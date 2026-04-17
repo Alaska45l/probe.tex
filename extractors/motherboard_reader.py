@@ -48,6 +48,7 @@ from core.models import MotherboardData
 #  CONSTANTES
 # ════════════════════════════════════════════════════════════════════════════
 
+import logging
 _DMIDECODE_TIMEOUT: int = 6
 _LSPCI_TIMEOUT:     int = 4
 
@@ -520,14 +521,14 @@ def extract_motherboard_data() -> MotherboardData:
             raw_board = _run(["dmidecode", "-t", "baseboard"])
             manufacturer, mobo_model = _parse_baseboard(raw_board)
         except Exception as exc:
-            print(f"[mobo_reader] WARN dmidecode baseboard: {exc}")
+            _log.warning("dmidecode baseboard: %s", exc)
 
         # ── Capa 1b: dmidecode bios ───────────────────────────────────────
         try:
             raw_bios     = _run(["dmidecode", "-t", "bios"])
             bios_version, bios_date = _parse_bios(raw_bios)
         except Exception as exc:
-            print(f"[mobo_reader] WARN dmidecode bios: {exc}")
+            _log.warning("dmidecode bios: %s", exc)
 
         # ── Capa 2: fallback sysfs DMI (sin sudo) ─────────────────────────
         if manufacturer == "N/A" or mobo_model == "N/A":
@@ -549,7 +550,7 @@ def extract_motherboard_data() -> MotherboardData:
         try:
             chipset = _detect_chipset()
         except Exception as exc:
-            print(f"[mobo_reader] WARN chipset: {exc}")
+            _log.warning("chipset: %s", exc)
 
         # ── Capa 4: sensor de voltaje VRM ─────────────────────────────────
         vrm_sensor_result = None
@@ -584,7 +585,7 @@ def extract_motherboard_data() -> MotherboardData:
                 v_now    = mv_now / 1000.0
                 v_nominal = round(min(max(v_now * 1.02, 0.8), 1.5), 3)
             except Exception as exc:
-                print(f"[mobo_reader] WARN lectura VRM: {exc}")
+                _log.warning("lectura VRM: %s", exc)
                 vrm_sensor_result = None   # forzar camino honesto (línea plana)
             else:
                 (vid_coords, medido_coords, tol_low, tol_high,
@@ -645,5 +646,5 @@ def extract_motherboard_data() -> MotherboardData:
         )
 
     except Exception as exc:    # pragma: no cover — guardia absoluta
-        print(f"[mobo_reader] ERROR CRÍTICO en extract_motherboard_data(): {exc}")
+        _log.error("CRÍTICO en extract_motherboard_data(): %s", exc)
         return MotherboardData()

@@ -74,7 +74,7 @@ from nacl.signing import VerifyKey
 # This constant MUST match the private key used by invariant.api.
 # Mismatching this value causes every valid license to be rejected.
 _EMBEDDED_PUBKEY_HEX: Final[str] = (
-    "4dbd5ceed62e158ee0d8bf02a94619b486e17e3323b3b7bf77872d3ea0c672ef"
+    "98ee0e2e03126d80cbd5e846acc0a6afa83d19ad3d6c84424a0a093bf46adeed"
     # ^^^ REPLACE WITH ACTUAL 64-HEX-CHAR ED25519 PUBLIC KEY BEFORE EACH BUILD ^^^
 )
 
@@ -460,7 +460,7 @@ def _verify_signature(
 #  LAYER 6 — Payload Parser
 # ════════════════════════════════════════════════════════════════════════════
 
-_VALID_PLANS: Final[frozenset[str]] = frozenset({"trial", "professional", "enterprise"})
+_VALID_PLANS: Final[frozenset[str]] = frozenset({"subscription"})
 
 
 def _parse_payload(json_bytes: bytes) -> LicensePayload:

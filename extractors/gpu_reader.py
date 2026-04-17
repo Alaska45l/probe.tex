@@ -52,6 +52,10 @@ from tui import runtime_log
 #  CONSTANTES
 # ════════════════════════════════════════════════════════════════════════════
 
+import logging
+
+_log = logging.getLogger(__name__)
+
 _LSPCI_TIMEOUT:   int = 5
 _MODINFO_TIMEOUT: int = 4
 _NSMI_TIMEOUT:    int = 5
@@ -410,11 +414,11 @@ def _run_vram_stress_test(
             errors = _parse_gpu_memtest_errors(r.stdout + r.stderr)
             return 0, 0, errors, max(vram_total_gb, 1), True
         except FileNotFoundError:
-            print("[gpu_reader] INFO gpu_memtest no disponible → fallback a memtester.")
+            _log.info("gpu_memtest no disponible → fallback a memtester.")
         except subprocess.TimeoutExpired:
-            print(f"[gpu_reader] WARN gpu_memtest superó {_VRAM_TEST_TIMEOUT_S} s → fallback.")
+            _log.warning("gpu_memtest superó %s s → fallback.", _VRAM_TEST_TIMEOUT_S)
         except Exception as exc:
-            print(f"[gpu_reader] WARN gpu_memtest: {exc} → fallback.")
+            _log.warning("gpu_memtest: %s → fallback.", exc)
         # Fallback explícito: caer al bloque memtester de abajo.
 
     # ── NVIDIA cuda-memtest ───────────────────────────────────────────────
@@ -426,11 +430,11 @@ def _run_vram_stress_test(
             errors = _parse_cuda_memtest_errors(r.stdout + r.stderr)
             return 0, 0, errors, max(vram_total_gb, 1), True
         except FileNotFoundError:
-            print("[gpu_reader] INFO cuda-memtest no disponible.")
+            _log.info("cuda-memtest no disponible.")
         except subprocess.TimeoutExpired:
-            print(f"[gpu_reader] WARN cuda-memtest superó {_VRAM_TEST_TIMEOUT_S} s.")
+            _log.warning("cuda-memtest superó %s s.", _VRAM_TEST_TIMEOUT_S)
         except Exception as exc:
-            print(f"[gpu_reader] WARN cuda-memtest: {exc}")
+            _log.warning("cuda-memtest: %s", exc)
         return 0, 0, 0, 0, False  # Sin fallback para NVIDIA
 
     # ── Intel iGPU / Xe / AMD APU → memtester sobre DRAM compartida ───────
@@ -449,11 +453,11 @@ def _run_vram_stress_test(
             tested_gb = max(test_mb // 1024, 1)
             return failures, 0, 0, tested_gb, True
         except FileNotFoundError:
-            print("[gpu_reader] INFO memtester no disponible para proxy iGPU/APU.")
+            _log.info("memtester no disponible para proxy iGPU/APU.")
         except subprocess.TimeoutExpired:
-            print(f"[gpu_reader] WARN memtester iGPU/APU superó {_VRAM_TEST_TIMEOUT_S} s.")
+            _log.warning("memtester iGPU/APU superó %s s.", _VRAM_TEST_TIMEOUT_S)
         except Exception as exc:
-            print(f"[gpu_reader] WARN memtester iGPU/APU: {exc}")
+            _log.warning("memtester iGPU/APU: %s", exc)
 
     return 0, 0, 0, 0, False
 
@@ -478,7 +482,7 @@ def _read_temps_nvidia() -> tuple[float, float]:
     except FileNotFoundError:
         pass
     except Exception as exc:
-        print(f"[gpu_reader] WARN _read_temps_nvidia: {exc}")
+        _log.warning("_read_temps_nvidia: %s", exc)
     return 0.0, 0.0
 
 
@@ -519,7 +523,7 @@ def _active_thermal_test_gpu(hwmon: Path) -> tuple[float, float]:
         proc.wait(timeout=_GPU_STRESS_DURATION_S + 15)
         stress_ok = True
     except FileNotFoundError:
-        print("[gpu_reader] WARN stress-ng no encontrado. Usando lectura idle.")
+        _log.warning("stress-ng no encontrado. Usando lectura idle.")
     except subprocess.TimeoutExpired:
         if proc is not None:
             proc.kill()
@@ -529,7 +533,7 @@ def _active_thermal_test_gpu(hwmon: Path) -> tuple[float, float]:
                 proc.kill()
             except Exception:
                 pass
-        print(f"[gpu_reader] WARN stress-ng GPU: {exc}")
+        _log.warning("stress-ng GPU: %s", exc)
 
     if not stress_ok:
         stop_event.set()
@@ -647,7 +651,7 @@ def extract_gpu_data() -> GPUData:
                     gpu_pcie_gen_info   = _pcie_speed_str_to_gen(cap_speed)
                     gpu_pcie_width_info = _safe_int(verbose.get("lnkcap_width", "0"))
         except Exception as exc:
-            print(f"[gpu_reader] WARN lspci: {exc}")
+            _log.warning("lspci: %s", exc)
 
         if driver_name:
             try:
@@ -681,14 +685,14 @@ def extract_gpu_data() -> GPUData:
         seq_errors = rand_errors = stress_errors = stress_gb = 0
 
         if _is_gui_active():
-            print("[gpu_reader] INFO GUI activa. Test destructivo de VRAM omitido.")
+            _log.info("GUI activa. Test destructivo de VRAM omitido.")
         else:
-            print("[gpu_reader] INFO TTY puro. Ejecutando test de integridad de VRAM...")
+            _log.info("TTY puro. Ejecutando test de integridad de VRAM...")
             try:
                 (seq_errors, rand_errors, stress_errors,
                  stress_gb, vram_tested) = _run_vram_stress_test(vram_gb, driver_name)
             except Exception as exc:
-                print(f"[gpu_reader] WARN _run_vram_stress_test: {exc}")
+                _log.warning("_run_vram_stress_test: %s", exc)
 
         # ── Capa 5: temperatura activa ────────────────────────────────────
         gpu_t_edge = gpu_t_hotspot = 0.0
@@ -712,10 +716,13 @@ def extract_gpu_data() -> GPUData:
                     gpu_t_hotspot     = nv_hotspot
                     gpu_delta_hotspot = round(nv_hotspot - nv_edge, 1)
                     hotspot_status    = _classify_hotspot(gpu_delta_hotspot, nv_edge, nv_hotspot)
-                    print(f"[gpu_reader] INFO NVIDIA hwmon ausente; temps via nvidia-smi: "
-                          f"edge={nv_edge}°C hotspot={nv_hotspot}°C")
+                    _log.info(
+                        "NVIDIA hwmon absent — temperatures via nvidia-smi: "
+                        "edge=%.1f°C hotspot=%.1f°C",
+                        nv_edge, nv_hotspot,
+                    )
         except Exception as exc:
-            print(f"[gpu_reader] WARN prueba térmica activa: {exc}")
+            _log.warning("prueba térmica activa: %s", exc)
 
         # ── Capa 6: PCIe ─────────────────────────────────────────────────
         pcie: dict[str, object] = {
@@ -727,7 +734,7 @@ def extract_gpu_data() -> GPUData:
             if card is not None:
                 pcie = _read_pcie_sysfs(card)
         except Exception as exc:
-            print(f"[gpu_reader] WARN PCIe: {exc}")
+            _log.warning("PCIe: %s", exc)
 
         if gpu_pcie_gen_info   == 0: gpu_pcie_gen_info   = int(pcie["gen_max"])
         if gpu_pcie_width_info == 0: gpu_pcie_width_info = int(pcie["lanes_max"])
@@ -769,5 +776,5 @@ def extract_gpu_data() -> GPUData:
         )
 
     except Exception as exc:
-        print(f"[gpu_reader] ERROR CRÍTICO en extract_gpu_data(): {exc}")
+        _log.error("CRÍTICO en extract_gpu_data(): %s", exc)
         return GPUData()

@@ -27,6 +27,7 @@ Resto del módulo idéntico a v1.1.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from pathlib import Path
@@ -34,6 +35,8 @@ from typing import Any, Final, Optional
 
 from core.models import StorageData
 from tui import runtime_log
+
+_log = logging.getLogger(__name__)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -214,13 +217,13 @@ def _run_fio_seek_latency_hdd(device: str) -> Optional[float]:
         data = json.loads(result.stdout)
         return round(data["jobs"][0]["read"]["clat_ns"]["mean"] / 1_000_000.0, 2)
     except FileNotFoundError:
-        print("[disk_reader] WARN fio no instalado. Seek latency HDD no disponible.")
+        _log.warning("fio not installed — HDD seek latency unavailable")
     except (KeyError, IndexError) as exc:
-        print(f"[disk_reader] WARN fio HDD: estructura JSON inesperada: {exc}")
+        _log.warning("fio HDD: unexpected JSON structure: %s", exc)
     except subprocess.TimeoutExpired:
-        print(f"[disk_reader] WARN fio HDD superó timeout de {_FIO_RUNTIME_HDD_S + 20} s.")
+        _log.warning("fio HDD exceeded timeout (%ds)", _FIO_RUNTIME_HDD_S + 20)
     except Exception as exc:
-        print(f"[disk_reader] WARN fio HDD seek: {exc}")
+        _log.warning("fio HDD seek: %s", exc)
     return None
 
 
@@ -238,7 +241,7 @@ def _extract_hdd_data(device_path: str, smart: dict) -> StorageData:
             _parse_identity(smart, device_path)
         )
     except Exception as exc:
-        print(f"[disk_reader] WARN HDD identidad: {exc}")
+        _log.warning("HDD identity parse failed: %s", exc)
 
     spin_up: Optional[int]   = None
     reallocated: Optional[int] = None
@@ -246,14 +249,14 @@ def _extract_hdd_data(device_path: str, smart: dict) -> StorageData:
     try:
         spin_up, reallocated, cmd_timeout = _parse_hdd_smart_attributes(smart)
     except Exception as exc:
-        print(f"[disk_reader] WARN HDD SMART mecánico: {exc}")
+        _log.warning("HDD SMART mechanical attributes: %s", exc)
 
     seek_ms: Optional[float] = None
     try:
         runtime_log(f"fio: Measuring physical seek latency on {device_path}...")
         seek_ms = _run_fio_seek_latency_hdd(device_path)
     except Exception as exc:
-        print(f"[disk_reader] WARN HDD fio seek: {exc}")
+        _log.warning("HDD fio seek latency: %s", exc)
 
     return StorageData(
         is_hdd                  = True,
@@ -324,7 +327,7 @@ def _collect_nvme_via_nvme_cli(namespace_path: str) -> dict[str, Any] | None:
     except FileNotFoundError:
         return None  # nvme-cli no instalado → señal de fallback a smartctl
     except Exception as exc:
-        print(f"[disk_reader] WARN nvme smart-log: {exc}")
+        _log.warning("nvme smart-log: %s", exc)
         return None
 
     # id-ctrl: controlador global (sin cambios)
@@ -335,7 +338,7 @@ def _collect_nvme_via_nvme_cli(namespace_path: str) -> dict[str, Any] | None:
         )
         id_ctrl: dict = json.loads(r_id.stdout) if r_id.returncode == 0 else {}
     except Exception as exc:
-        print(f"[disk_reader] WARN nvme id-ctrl: {exc}")
+        _log.warning("nvme id-ctrl: %s", exc)
         id_ctrl = {}
 
     raw_temp: int  = smart_log.get("temperature", 0)
@@ -513,13 +516,13 @@ def _extract_ssd_data(device_path: str, smart: dict) -> StorageData:
             _parse_identity(smart, device_path)
         )
     except Exception as exc:
-        print(f"[disk_reader] WARN SSD identidad: {exc}")
+        _log.warning("SSD identity parse failed: %s", exc)
 
     health: dict[str, Any] = {}
     try:
         health = _parse_health_log(smart)
     except Exception as exc:
-        print(f"[disk_reader] WARN SSD health log: {exc}")
+        _log.warning("SSD health log parse failed: %s", exc)
 
     percentage_used    = health.get("percentage_used",    0)
     available_spare    = health.get("available_spare",  100)
@@ -536,20 +539,20 @@ def _extract_ssd_data(device_path: str, smart: dict) -> StorageData:
         )
         waf, nand_written_tb = _extract_real_waf(smart, lba_written_tb)
     except Exception as exc:
-        print(f"[disk_reader] WARN SSD TBW/WAF: {exc}")
+        _log.warning("SSD TBW/WAF calculation: %s", exc)
 
     bad_blocks = 0
     ecc_errors = media_errors
     try:
         bad_blocks, ecc_errors = _parse_bad_blocks_and_ecc(smart, health)
     except Exception as exc:
-        print(f"[disk_reader] WARN SSD bad_blocks/ECC: {exc}")
+        _log.warning("SSD bad_blocks/ECC parse: %s", exc)
 
     flags: dict[str, bool] = {}
     try:
         flags = _compute_flags(t_max, life_pct, waf, bad_blocks, available_spare, ecc_errors)
     except Exception as exc:
-        print(f"[disk_reader] WARN SSD flags: {exc}")
+        _log.warning("SSD health flags computation: %s", exc)
 
     buckets: list[int] = [0] * 10
     p50 = p95 = p99 = p999 = 0.0
@@ -557,9 +560,9 @@ def _extract_ssd_data(device_path: str, smart: dict) -> StorageData:
         runtime_log(f"fio: Sweeping NVMe/SSD latency on {device_path}...")
         buckets, p50, p95, p99, p999 = _run_fio_latency_ssd(device_path)
     except FileNotFoundError:
-        print("[disk_reader] WARN fio no instalado. Latencia SSD no disponible.")
+        _log.warning("fio not installed — SSD latency sweep unavailable")
     except Exception as exc:
-        print(f"[disk_reader] WARN fio SSD: {exc}")
+        _log.warning("fio SSD latency: %s", exc)
 
     return StorageData(
         is_hdd            = False,
@@ -615,34 +618,34 @@ def extract_disk_data(device_path: str = "/dev/nvme0n1") -> StorageData:
         is_nvme       = Path(device_path).name.startswith("nvme")
 
         if is_rotational:
-            print(f"[disk_reader] INFO {device_path}: HDD mecánico.")
+            _log.info("%s: rotational HDD detected", device_path)
             try:
                 smart = _run_smartctl(device_path, timeout=8, is_nvme=False)
             except Exception as exc:
-                print(f"[disk_reader] WARN smartctl HDD: {exc}")
+                _log.warning("smartctl HDD (%s): %s — returning empty StorageData", device_path, exc)
                 return StorageData()
             return _extract_hdd_data(device_path, smart)
 
         if is_nvme:
-            print(f"[disk_reader] INFO {device_path}: NVMe → nvme-cli primario.")
+            _log.info("%s: NVMe — attempting nvme-cli primary path", device_path)
             smart = _collect_nvme_via_nvme_cli(device_path)
             if smart is None:
-                print("[disk_reader] INFO nvme-cli no disponible → smartctl NVMe fallback.")
+                _log.info("nvme-cli unavailable — falling back to smartctl NVMe RC-mask")
                 try:
                     smart = _run_smartctl(device_path, timeout=10, is_nvme=True)
                 except Exception as exc:
-                    print(f"[disk_reader] WARN smartctl NVMe fallback: {exc}")
+                    _log.warning("smartctl NVMe fallback (%s): %s", device_path, exc)
                     return StorageData()
         else:
-            print(f"[disk_reader] INFO {device_path}: SSD SATA → smartctl estándar.")
+            _log.info("%s: SATA SSD — smartctl standard path", device_path)
             try:
                 smart = _run_smartctl(device_path, timeout=8, is_nvme=False)
             except Exception as exc:
-                print(f"[disk_reader] WARN smartctl SATA: {exc}")
+                _log.warning("smartctl SATA (%s): %s", device_path, exc)
                 return StorageData()
 
         return _extract_ssd_data(device_path, smart)
 
     except Exception as exc:
-        print(f"[disk_reader] ERROR CRÍTICO en extract_disk_data(): {exc}")
+        _log.error("extract_disk_data(%s) critical failure: %s", device_path, exc)
         return StorageData()
