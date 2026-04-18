@@ -57,6 +57,7 @@ import struct
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 from pathlib import Path
 from typing import Final
 
@@ -261,19 +262,77 @@ def _read_dmi(field: str) -> str | None:
     except Exception:
         return None
 
+def _read_cpuid() -> str | None:
+    """
+    Extracts the CPUID signature from the SMBIOS Processor table.
+    Bypasses OS-level spoofing by reading the firmware table directly.
+    """
+    try:
+        result = subprocess.run(
+            ["dmidecode", "-t", "processor"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+        # Search for lines like: ID: C3 06 09 00 FF FB EB BF
+        match = re.search(r"^\s*ID:\s*(.+)$", result.stdout, re.MULTILINE)
+        if match:
+            # Strip whitespace and normalize to uppercase hex
+            return match.group(1).strip().replace(" ", "").upper()
+    except Exception as exc:
+        _log.debug("Failed to read CPUID: %s", exc)
+    return None
+
+def _read_tpm_hash() -> str | None:
+    """
+    Attempts to extract a unique TPM identifier (Endorsement Key).
+    Since EK is burned in at manufacturing, it is a robust physical anchor.
+    """
+    # Strategy 1: Use tpm2-tools to read the EK public key
+    try:
+        result = subprocess.run(
+            ["tpm2_readpublic", "-c", "ek"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout:
+            # Hash the stdout to normalize
+            return hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
+    except Exception as exc:
+        _log.debug("tpm2_readpublic failed: %s", exc)
+
+    # Strategy 2: Direct sysfs read (fallback if tools aren't installed)
+    ek_path = Path("/sys/class/tpm/tpm0/device/ek_pub")
+    try:
+        if ek_path.exists():
+            data = ek_path.read_bytes()
+            if data:
+                return hashlib.sha256(data).hexdigest()
+    except Exception as exc:
+        _log.debug("sysfs TPM read failed: %s", exc)
+
+    return None
+
 
 def compute_hardware_fingerprint() -> str:
     """
-    Produces a deterministic SHA-256 fingerprint of this machine's DMI identity.
+    Produces a deterministic SHA-256 fingerprint of this machine's physical hardware.
+    
+    Combines:
+    1. Motherboard Serial / UUID (DMI)
+    2. Processor ID (CPUID)
+    3. TPM Endorsement Key Hash (If present)
 
-    Components are formatted as "field_name:value" strings, sorted
+    Components are formatted as "prefix:value" strings, sorted
     lexicographically, and joined with NUL bytes before hashing. Sorting
     ensures the fingerprint is identical regardless of which subset of fields
     is readable (order-independent accumulation).
 
-    Raises LicenseError("FINGERPRINT_UNAVAILABLE") if no valid DMI field is
-    found — this indicates either a non-standard system or a virtualized
-    environment without DMI passthrough.
+    Raises LicenseError("FINGERPRINT_UNAVAILABLE") if NO valid anchor is
+    found — this indicates an anomalous or heavily spoofed environment.
 
     Returns
     -------
@@ -281,11 +340,25 @@ def compute_hardware_fingerprint() -> str:
         64-char lowercase hex string (SHA-256 of canonical component string).
     """
     components: list[str] = []
+    
+    # 1. Motherboard / System DMI
     for field in _DMI_FIELDS:
         val = _read_dmi(field)
         if val is not None:
-            components.append(f"{field}:{val}")
-            _log.debug("Fingerprint component: %s=<redacted>", field)
+            components.append(f"dmi:{field}:{val}")
+            _log.debug("Fingerprint component: dmi:%s=<redacted>", field)
+            
+    # 2. Processor ID
+    cpuid = _read_cpuid()
+    if cpuid is not None:
+        components.append(f"cpu:id:{cpuid}")
+        _log.debug("Fingerprint component: cpu:id=<redacted>")
+        
+    # 3. TPM Endorsement Key
+    tpm_hash = _read_tpm_hash()
+    if tpm_hash is not None:
+        components.append(f"tpm:ek:{tpm_hash}")
+        _log.debug("Fingerprint component: tpm:ek=<redacted>")
 
     if not components:
         raise LicenseError("FINGERPRINT_UNAVAILABLE")
