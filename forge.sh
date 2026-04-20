@@ -360,8 +360,6 @@ _header() {
 _menu() {
     _header
     echo -e "  ${RED}[ 1 ]${RST} ${WHT}INIT DIAGNOSTIC${RST}    ${DIM}Ejecutar probe.tex y generar reporte PDF${RST}"
-    echo -e "  ${RED}[ 2 ]${RST} ${WHT}EXPORT REPORT${RST}      ${DIM}Montar USB y extraer reporte generado${RST}"
-    echo -e "  ${RED}[ 3 ]${RST} ${WHT}ROOT SHELL${RST}         ${DIM}Acceso a terminal (escriba 'exit' para volver)${RST}"
     echo -e "  ${RED}[ 4 ]${RST} ${WHT}FORCE SHUTDOWN${RST}     ${DIM}Apagado forzado del sistema a nivel kernel${RST}"
     echo ""
 }
