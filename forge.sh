@@ -311,6 +311,7 @@ python
 python-rich
 python-jinja
 python-pynacl
+python-qrcode
 stress-ng
 fio
 memtester
@@ -564,18 +565,11 @@ editor  no
 LOADERCONF
 
 cat > "${ISO_ROOT}/efiboot/loader/entries/01-probe-tex.conf" << 'EFIENTRY'
-title   INVARIANT probe.tex // Ring-0 Forensic Diagnostic
+title   INVARIANT probe.tex // Forensic Diagnostic
 linux   /arch/boot/x86_64/vmlinuz-linux
 initrd  /arch/boot/x86_64/initramfs-linux.img
 options archisobasedir=arch archisolabel=PROBE_TEX archisodelay=5 console=tty0 quiet loglevel=3
 EFIENTRY
-
-cat > "${ISO_ROOT}/efiboot/loader/entries/02-probe-tex-debug.conf" << 'EFIENTRY_DEBUG'
-title   INVARIANT probe.tex // DEBUG MODE
-linux   /arch/boot/x86_64/vmlinuz-linux
-initrd  /arch/boot/x86_64/initramfs-linux.img
-options archisobasedir=arch archisolabel=PROBE_TEX archisodelay=5 archiso_debug=1 console=tty0 loglevel=7
-EFIENTRY_DEBUG
 
 cat > "${ISO_ROOT}/syslinux/syslinux.cfg" << 'SYSLINUX'
 UI      menu.c32
@@ -594,12 +588,6 @@ LABEL probe-tex
   LINUX  /arch/boot/x86_64/vmlinuz-linux
   INITRD /arch/boot/x86_64/initramfs-linux.img
   APPEND archisobasedir=arch archisolabel=PROBE_TEX archisodelay=5 console=tty0 quiet loglevel=3
-
-LABEL probe-tex-debug
-  MENU LABEL  INVARIANT probe.tex // DEBUG MODE [archiso_debug=1]
-  LINUX  /arch/boot/x86_64/vmlinuz-linux
-  INITRD /arch/boot/x86_64/initramfs-linux.img
-  APPEND archisobasedir=arch archisolabel=PROBE_TEX archisodelay=5 archiso_debug=1 console=tty0 loglevel=7
 SYSLINUX
 
 # FIX-15 layer 4: kernel-level firstboot suppression (idempotent).

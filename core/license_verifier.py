@@ -52,6 +52,7 @@ import hmac
 import json as _json
 import logging
 import os
+import secrets as _secrets
 import stat as _stat
 import struct
 import subprocess
@@ -92,10 +93,14 @@ _ISO_BUILD_TIMESTAMP: Final[int] = 0  # FORGE_PATCH_BUILD_TIMESTAMP
 # Absolute path to the license file on the USB data partition.
 # The verifier refuses to read from any other path.
 _LICENSE_FILE: Final[Path] = Path("/mnt/invariant_data/license.sig")
+_BOOTSTRAP_FILE: Final[Path] = Path("/mnt/invariant_data/bootstrap.sig")
 _LICENSE_DIR:  Final[Path] = Path("/mnt/invariant_data")
 
 # Hard cap on license file size. Prevents unbounded read on malicious FS.
 _LICENSE_MAX_BYTES: Final[int] = 8_192  # 8 KiB
+
+# Air-Gap Bridge: activation URL base
+_ACTIVATION_URL_BASE: Final[str] = "https://invariant.systems/api/v1/license/activate"
 
 # RTC ioctl — RTC_RD_TIME = _IOR('p', 0x09, struct rtc_time)
 # x86_64: sizeof(struct rtc_time) = 9 × sizeof(int) = 36 bytes.
@@ -156,6 +161,17 @@ class LicensePayload:
     expires_at:  int   # UTC Unix seconds
     nonce:       str
 
+
+@dataclass(frozen=True, slots=True)
+class BootstrapPayload:
+    """Hardware-unbound bootstrap token. Contains activation_secret for PIN verification."""
+    version:           int
+    subscription_id:   str
+    plan:              str
+    issued_at:         int   # UTC Unix seconds
+    expires_at:        int   # UTC Unix seconds
+    nonce:             str
+    activation_secret: str   # 64-char hex HMAC key
 
 # ════════════════════════════════════════════════════════════════════════════
 #  LAYER 1 — Hardware RTC Reader
@@ -686,6 +702,300 @@ def _verify_hardware_id(payload: LicensePayload, local_fp: str) -> None:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+#  LAYER 9 — Bootstrap Token Parser
+# ════════════════════════════════════════════════════════════════════════════
+
+def _parse_bootstrap_payload(json_bytes: bytes) -> BootstrapPayload:
+    """
+    Parses and validates a bootstrap token payload (hardware-unbound).
+    Called ONLY after Ed25519 signature verification.
+    """
+    try:
+        data: object = _json.loads(json_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, _json.JSONDecodeError) as exc:
+        raise LicenseError("BOOTSTRAP_DECODE_FAILED") from exc
+
+    if not isinstance(data, dict):
+        raise LicenseError("BOOTSTRAP_NOT_OBJECT")
+
+    version = data.get("v")
+    if version != 1:
+        raise LicenseError(f"BOOTSTRAP_VERSION_UNSUPPORTED:{version!r}")
+
+    subscription_id = data.get("subscription_id")
+    plan            = data.get("plan")
+    issued_at       = data.get("issued_at")
+    expires_at      = data.get("expires_at")
+    nonce           = data.get("nonce")
+    activation_secret = data.get("activation_secret")
+
+    if not (isinstance(subscription_id, str) and len(subscription_id) > 0):
+        raise LicenseError("BOOTSTRAP_SUBSCRIPTION_ID_INVALID")
+
+    if not (isinstance(plan, str) and plan in {"subscription", "trial"}):
+        raise LicenseError(f"BOOTSTRAP_PLAN_INVALID:{plan!r}")
+
+    if not (isinstance(issued_at, int) and issued_at > 0):
+        raise LicenseError("BOOTSTRAP_ISSUED_AT_INVALID")
+
+    if not (isinstance(expires_at, int) and expires_at > issued_at):
+        raise LicenseError("BOOTSTRAP_EXPIRES_AT_INVALID")
+
+    if not (isinstance(nonce, str) and len(nonce) == 32 and nonce.isascii()):
+        raise LicenseError("BOOTSTRAP_NONCE_INVALID")
+
+    if not (isinstance(activation_secret, str) and len(activation_secret) == 64):
+        raise LicenseError("BOOTSTRAP_SECRET_INVALID")
+
+    return BootstrapPayload(
+        version=version,
+        subscription_id=subscription_id,
+        plan=plan,
+        issued_at=issued_at,
+        expires_at=expires_at,
+        nonce=nonce,
+        activation_secret=activation_secret,
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  LAYER 10 — Air-Gap Bridge: Challenge-Response Activation
+# ════════════════════════════════════════════════════════════════════════════
+
+def _generate_challenge(
+    bootstrap: BootstrapPayload,
+    local_fp: str,
+    rtc_now: datetime,
+) -> tuple[dict, str]:
+    """
+    Generates a QR challenge dict and the activation URL.
+
+    Returns (challenge_dict, full_url).
+    """
+    import base64 as _b64
+
+    challenge_nonce = _secrets.token_hex(16)  # 32-char hex
+    boot_id = _secrets.token_hex(8)           # 16-char hex
+
+    challenge = {
+        "v": 1,
+        "subscription_id": bootstrap.subscription_id,
+        "quimera": local_fp,
+        "nonce": challenge_nonce,
+        "ts": int(rtc_now.timestamp()),
+        "boot_id": boot_id,
+    }
+
+    challenge_json = _json.dumps(challenge, separators=(",", ":")).encode("utf-8")
+    challenge_b64 = _b64.urlsafe_b64encode(challenge_json).rstrip(b"=").decode("ascii")
+
+    url = f"{_ACTIVATION_URL_BASE}?c={challenge_b64}"
+
+    return challenge, url
+
+
+def _verify_activation_pin(
+    activation_secret: str,
+    challenge_nonce: str,
+    quimera: str,
+    entered_pin: str,
+) -> bool:
+    """
+    Verifies a 6-digit activation PIN against the expected HMAC derivation.
+
+    MUST produce identical results as the Go API's computeActivationPIN().
+    Uses constant-time comparison to prevent timing side-channels.
+    """
+    secret_bytes = bytes.fromhex(activation_secret)
+    mac = hmac.new(secret_bytes, (challenge_nonce + quimera).encode(), hashlib.sha256)
+    pin_material = mac.digest()
+
+    # Take first 4 bytes as big-endian uint32, mod 1_000_000
+    pin_int = int.from_bytes(pin_material[:4], "big") % 1_000_000
+    expected_pin = str(pin_int).zfill(6)
+
+    return hmac.compare_digest(expected_pin, entered_pin)
+
+
+def _write_bound_license(
+    bootstrap: BootstrapPayload,
+    local_fp: str,
+    challenge_nonce: str,
+    rtc_now: datetime,
+) -> None:
+    """
+    Writes a hardware-bound license to the INVARIANT partition.
+
+    The bound license is signed with HMAC-SHA256 using the activation_secret,
+    not Ed25519 (the ISO doesn't have the private key). On subsequent boots,
+    the verifier checks this HMAC signature.
+
+    Also deletes bootstrap.sig to prevent re-use.
+    """
+    bound_payload = {
+        "v": 1,
+        "hardware_id": local_fp,
+        "subscription_id": bootstrap.subscription_id,
+        "plan": bootstrap.plan,
+        "issued_at": bootstrap.issued_at,
+        "expires_at": bootstrap.expires_at,
+        "nonce": bootstrap.nonce,
+        "activated_at": int(rtc_now.timestamp()),
+        "activation_nonce": challenge_nonce,
+        "activation_secret": bootstrap.activation_secret,
+    }
+
+    payload_json = _json.dumps(bound_payload, separators=(",", ":")).encode("utf-8")
+
+    # HMAC-SHA256 signature using activation_secret
+    secret_bytes = bytes.fromhex(bootstrap.activation_secret)
+    sig = hmac.new(secret_bytes, payload_json, hashlib.sha256).digest()
+
+    import base64 as _b64
+    enc = _b64.urlsafe_b64encode
+    token = (
+        enc(payload_json).rstrip(b"=").decode("ascii")
+        + "."
+        + enc(sig).rstrip(b"=").decode("ascii")
+    )
+
+    # Mount INVARIANT partition read-write
+    _mount_invariant_rw()
+
+    try:
+        _LICENSE_FILE.write_text(token, encoding="ascii")
+        _log.info("Bound license written to %s", _LICENSE_FILE)
+
+        # Delete consumed bootstrap token
+        if _BOOTSTRAP_FILE.exists():
+            _BOOTSTRAP_FILE.unlink()
+            _log.info("Bootstrap token consumed (deleted)")
+    except OSError as exc:
+        raise LicenseError("LICENSE_WRITE_FAILED") from exc
+    finally:
+        _remount_invariant_ro()
+
+
+def _mount_invariant_rw() -> None:
+    """Remounts the INVARIANT partition as read-write."""
+    try:
+        subprocess.run(
+            ["mount", "-o", "remount,rw", str(_LICENSE_DIR)],
+            capture_output=True, timeout=5, check=False,
+        )
+    except Exception as exc:
+        _log.warning("Failed to remount INVARIANT rw: %s", exc)
+
+
+def _remount_invariant_ro() -> None:
+    """Remounts the INVARIANT partition as read-only."""
+    try:
+        subprocess.run(
+            ["mount", "-o", "remount,ro", str(_LICENSE_DIR)],
+            capture_output=True, timeout=5, check=False,
+        )
+    except Exception as exc:
+        _log.warning("Failed to remount INVARIANT ro: %s", exc)
+
+
+def _read_file_safe(target: Path) -> str | None:
+    """
+    Reads a file with the same security checks as _read_license_file,
+    but returns None instead of raising on missing file.
+    """
+    try:
+        lstat_result = target.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+    if _stat.S_ISLNK(lstat_result.st_mode):
+        return None
+    if not _stat.S_ISREG(lstat_result.st_mode):
+        return None
+    if lstat_result.st_size == 0 or lstat_result.st_size > _LICENSE_MAX_BYTES:
+        return None
+
+    try:
+        real_path = target.resolve(strict=True)
+        real_dir = _LICENSE_DIR.resolve()
+        real_path.relative_to(real_dir)
+    except (ValueError, OSError):
+        return None
+
+    try:
+        return target.read_text(encoding="ascii").strip()
+    except Exception:
+        return None
+
+
+def _verify_bound_license(raw_token: str, rtc_now: datetime) -> LicensePayload:
+    """
+    Verifies a locally-signed bound license (HMAC-SHA256, post-activation).
+
+    The bound license was written by _write_bound_license() after successful
+    QR activation. It contains activation_secret for HMAC verification and
+    hardware_id for machine binding.
+    """
+    parts = raw_token.split(".")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise LicenseError("BOUND_TOKEN_MALFORMED")
+
+    try:
+        pad = (-len(parts[0])) % 4
+        json_bytes = base64.urlsafe_b64decode(parts[0] + "=" * pad)
+    except Exception:
+        raise LicenseError("BOUND_PAYLOAD_ENCODING_INVALID")
+
+    try:
+        pad = (-len(parts[1])) % 4
+        sig_bytes = base64.urlsafe_b64decode(parts[1] + "=" * pad)
+    except Exception:
+        raise LicenseError("BOUND_SIGNATURE_ENCODING_INVALID")
+
+    # Parse payload first to extract activation_secret for HMAC verification
+    try:
+        data = _json.loads(json_bytes.decode("utf-8"))
+    except Exception:
+        raise LicenseError("BOUND_PAYLOAD_DECODE_FAILED")
+
+    if not isinstance(data, dict):
+        raise LicenseError("BOUND_PAYLOAD_NOT_OBJECT")
+
+    activation_secret = data.get("activation_secret")
+    if not (isinstance(activation_secret, str) and len(activation_secret) == 64):
+        raise LicenseError("BOUND_SECRET_INVALID")
+
+    # Verify HMAC-SHA256 signature
+    secret_bytes = bytes.fromhex(activation_secret)
+    expected_sig = hmac.new(secret_bytes, json_bytes, hashlib.sha256).digest()
+    if not hmac.compare_digest(expected_sig, sig_bytes):
+        raise LicenseError("BOUND_SIGNATURE_INVALID")
+
+    _log.info("Bound license HMAC: VALID")
+
+    # Extract fields
+    hardware_id = data.get("hardware_id")
+    plan = data.get("plan")
+    issued_at = data.get("issued_at")
+    expires_at = data.get("expires_at")
+    nonce = data.get("nonce")
+
+    if not (isinstance(hardware_id, str) and len(hardware_id) == 64):
+        raise LicenseError("BOUND_HARDWARE_ID_INVALID")
+
+    return LicensePayload(
+        version=data.get("v", 1),
+        hardware_id=hardware_id,
+        plan=plan if isinstance(plan, str) else "subscription",
+        issued_at=issued_at if isinstance(issued_at, int) else 0,
+        expires_at=expires_at if isinstance(expires_at, int) else 0,
+        nonce=nonce if isinstance(nonce, str) else "",
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  PUBLIC API
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -696,15 +1006,25 @@ def verify_license() -> LicensePayload:
     Returns the validated LicensePayload on success.
     Raises LicenseError with a machine-readable code on ANY failure.
 
-    Execution order is intentional and security-sensitive:
+    Flow branching (Air-Gap Bridge):
 
-      1. RTC read (before file I/O; least susceptible to time drift during boot).
-      2. File read (path-safe; detects missing/tampered license early).
-      3. Token decode (structural check; cheap to fail before crypto).
-      4. Signature verify (before JSON parse; prevents crafted-JSON DoS).
-      5. Payload parse (after auth; validates schema and field types).
-      6. Time constraints (expiry and anti-rollback).
-      7. Hardware fingerprint (most expensive; last to minimize wasted work).
+      A. license.sig exists → BOUND LICENSE PATH
+         1. Try Ed25519 verification (original server-signed license)
+         2. If Ed25519 fails, try HMAC verification (locally-bound license)
+         3. Verify hardware_id match
+         4. Verify time constraints
+
+      B. bootstrap.sig exists → ACTIVATION PATH
+         1. Verify Ed25519 signature on bootstrap token
+         2. Check expiry
+         3. Compute Quimera Hash
+         4. Display QR code with challenge
+         5. Wait for PIN input from technician
+         6. Verify PIN via HMAC derivation
+         7. Write hardware-bound license to USB
+         8. Return validated payload
+
+      C. Neither file exists → LICENSE_FILE_NOT_FOUND
 
     All exceptions propagate as LicenseError. Do not add bare 'except' blocks
     here — silent catches would convert this from fail-closed to fail-open.
@@ -713,27 +1033,46 @@ def verify_license() -> LicensePayload:
     rtc_now: datetime = _read_hardware_rtc()
     _log.info("RTC: %s", rtc_now.isoformat())
 
-    # Step 2: Read license file (path-safe I/O)
-    raw_token: str = _read_license_file()
+    # Step 2: Determine which flow to execute
+    license_raw = _read_file_safe(_LICENSE_FILE)
+    bootstrap_raw = _read_file_safe(_BOOTSTRAP_FILE)
 
-    # Step 3: Structural decode
-    json_bytes: bytes
-    sig_bytes: bytes
+    if license_raw is not None:
+        # ═══ PATH A: Bound license exists ═══
+        return _verify_bound_license_flow(license_raw, rtc_now)
+
+    if bootstrap_raw is not None:
+        # ═══ PATH B: Bootstrap activation flow ═══
+        return _verify_bootstrap_activation_flow(bootstrap_raw, rtc_now)
+
+    # ═══ PATH C: No license at all ═══
+    raise LicenseError("LICENSE_FILE_NOT_FOUND")
+
+
+def _verify_bound_license_flow(raw_token: str, rtc_now: datetime) -> LicensePayload:
+    """
+    Path A: Verifies an existing license (Ed25519 or HMAC-signed).
+    This is the original flow for server-signed licenses + the new path
+    for locally-bound licenses written after QR activation.
+    """
     json_bytes, sig_bytes = _split_token(raw_token)
+    verify_key = _get_verify_key()
 
-    # Step 4: Cryptographic verification (before payload parse)
-    verify_key: VerifyKey = _get_verify_key()
-    _verify_signature(json_bytes, sig_bytes, verify_key)
-    _log.info("Signature: VALID")
+    # Try Ed25519 first (server-signed license from handleForgeLicense)
+    try:
+        _verify_signature(json_bytes, sig_bytes, verify_key)
+        _log.info("Signature: VALID (Ed25519)")
+        payload = _parse_payload(json_bytes)
+    except LicenseError:
+        # Fallback: try HMAC verification (locally-bound license from activation)
+        _log.debug("Ed25519 verification failed, trying HMAC bound license")
+        payload = _verify_bound_license(raw_token, rtc_now)
 
-    # Step 5: Parse payload (authenticity now established)
-    payload: LicensePayload = _parse_payload(json_bytes)
-
-    # Step 6: Temporal constraints
+    # Time constraints
     _enforce_time_constraints(payload, rtc_now)
 
-    # Step 7: Hardware fingerprint (most expensive — do last)
-    local_fp: str = compute_hardware_fingerprint()
+    # Hardware fingerprint
+    local_fp = compute_hardware_fingerprint()
     _verify_hardware_id(payload, local_fp)
 
     _log.info(
@@ -745,3 +1084,94 @@ def verify_license() -> LicensePayload:
     )
 
     return payload
+
+
+def _verify_bootstrap_activation_flow(
+    raw_token: str,
+    rtc_now: datetime,
+) -> LicensePayload:
+    """
+    Path B: QR Challenge-Response activation flow.
+
+    1. Verify bootstrap token (Ed25519-signed by API)
+    2. Check expiry
+    3. Compute hardware fingerprint (Quimera Hash)
+    4. Generate challenge + display QR code
+    5. Wait for PIN from technician
+    6. Verify PIN
+    7. Write hardware-bound license
+    8. Return payload
+    """
+    from core.qr_display import (
+        display_activation_screen,
+        display_activation_success,
+        display_activation_failure,
+    )
+
+    # Step 1: Decode + verify bootstrap token signature
+    json_bytes, sig_bytes = _split_token(raw_token)
+    verify_key = _get_verify_key()
+    _verify_signature(json_bytes, sig_bytes, verify_key)
+    _log.info("Bootstrap signature: VALID")
+
+    # Step 2: Parse bootstrap payload
+    bootstrap = _parse_bootstrap_payload(json_bytes)
+
+    # Step 3: Check expiry
+    rtc_unix = int(rtc_now.timestamp())
+    if rtc_unix >= bootstrap.expires_at:
+        raise LicenseError("BOOTSTRAP_EXPIRED")
+
+    # Step 4: Anti-rollback
+    if _ISO_BUILD_TIMESTAMP > 0 and rtc_unix < _ISO_BUILD_TIMESTAMP:
+        raise LicenseError("TIME_ROLLBACK_DETECTED")
+
+    # Step 5: Compute hardware fingerprint (Quimera Hash)
+    _log.info("Computing hardware fingerprint for activation...")
+    local_fp = compute_hardware_fingerprint()
+    _log.info("Quimera Hash: %s...%s", local_fp[:8], local_fp[-8:])
+
+    # Step 6: Generate challenge and display QR
+    challenge, challenge_url = _generate_challenge(bootstrap, local_fp, rtc_now)
+    _log.info("Challenge URL generated for activation")
+
+    entered_pin = display_activation_screen(
+        challenge_url=challenge_url,
+        boot_id=challenge["boot_id"],
+        timeout_seconds=300,
+    )
+
+    if entered_pin is None:
+        display_activation_failure("Tiempo agotado o entrada cancelada.")
+        raise LicenseError("ACTIVATION_TIMEOUT")
+
+    # Step 7: Verify PIN
+    if not _verify_activation_pin(
+        activation_secret=bootstrap.activation_secret,
+        challenge_nonce=challenge["nonce"],
+        quimera=local_fp,
+        entered_pin=entered_pin,
+    ):
+        display_activation_failure("PIN incorrecto. Regenere el código QR reiniciando.")
+        raise LicenseError("ACTIVATION_PIN_INVALID")
+
+    # Step 8: Write hardware-bound license
+    _write_bound_license(bootstrap, local_fp, challenge["nonce"], rtc_now)
+    display_activation_success()
+
+    _log.info(
+        "ACTIVATION COMPLETE: sub=%s plan=%s hw=%s...%s",
+        bootstrap.subscription_id,
+        bootstrap.plan,
+        local_fp[:8], local_fp[-8:],
+    )
+
+    # Return a LicensePayload for compatibility with the rest of the system
+    return LicensePayload(
+        version=1,
+        hardware_id=local_fp,
+        plan=bootstrap.plan,
+        issued_at=bootstrap.issued_at,
+        expires_at=bootstrap.expires_at,
+        nonce=bootstrap.nonce,
+    )
