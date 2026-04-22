@@ -343,6 +343,7 @@ smartmontools
 nvme-cli
 tpm2-tools
 exfatprogs
+kmscon
 lm_sensors
 cpupower
 tectonic
@@ -411,13 +412,22 @@ _run_diagnostic() {
     # bootstrap.sig / license.sig are visible to the Python verifier.
     mkdir -p /mnt/invariant_data
     if ! mountpoint -q /mnt/invariant_data; then
-        echo -e "\e[1;33m[*]\e[0m Montando partición de datos (INVARIANT)..."
+        echo -e "\e[1;33m[*]\e[0m Reparando y montando partición de datos (INVARIANT)..."
+        # Aggressive auto-repair (-y) maximizes probability of clearing the
+        # exFAT volume dirty bit before the first mount.
+        fsck.exfat -y /dev/disk/by-label/INVARIANT 2>/dev/null || true
         if ! mount -t exfat -L INVARIANT /mnt/invariant_data 2> /tmp/mount_err.log; then
             echo -e "\e[1;31m[!]\e[0m ERROR CRÍTICO: No se pudo montar la partición INVARIANT."
             cat /tmp/mount_err.log
             return 1
         fi
     fi
+    # Real-world write test: verify the kernel actually granted RW.
+    if ! touch /mnt/invariant_data/.rw_probe 2>/dev/null; then
+        echo -e "\e[1;31m[!]\e[0m ERROR CRÍTICO: Partición INVARIANT montada en modo SOLO LECTURA."
+        return 1
+    fi
+    rm -f /mnt/invariant_data/.rw_probe
 
     # Ejecuta Python con captura determinista de stderr.
     # Usa procesos sustituidos + wait para garantizar flush completo
@@ -427,12 +437,37 @@ _run_diagnostic() {
     wait  # Espera a que los subshells de tee terminen de flushear
 
     if [[ ${rc} -eq 0 ]]; then
-        # Auto-save: attempt to mount INVARIANT partition and copy report.
+        # Auto-save: verify RW state, copy report, clean unmount.
         local inv_dev inv_mnt="/mnt/invariant_data"
         inv_dev="$(blkid -L INVARIANT 2>/dev/null || true)"
         if [[ -n "${inv_dev}" && -b "${inv_dev}" ]]; then
             mkdir -p "${inv_mnt}"
-            if mount -o rw "${inv_dev}" "${inv_mnt}" 2>/dev/null; then
+
+            # Phase 1: Ensure the filesystem is actually writable.
+            # mount(8) may return 0 even when the kernel silently forces RO
+            # on a dirty exFAT volume. We trust a real write probe, not mount.
+            local _actually_rw=0
+            if mountpoint -q "${inv_mnt}"; then
+                if touch "${inv_mnt}/.rw_probe" 2>/dev/null; then
+                    rm -f "${inv_mnt}/.rw_probe"
+                    _actually_rw=1
+                else
+                    # Mounted but RO — dirty-bit trap. Unmount, repair, remount.
+                    umount "${inv_mnt}" 2>/dev/null || true
+                    fsck.exfat -y "${inv_dev}" 2>/dev/null || true
+                    if mount -t exfat "${inv_dev}" "${inv_mnt}" 2>/dev/null; then
+                        touch "${inv_mnt}/.rw_probe" 2>/dev/null && rm -f "${inv_mnt}/.rw_probe" && _actually_rw=1
+                    fi
+                fi
+            else
+                # Not mounted at all — mount fresh.
+                if mount -t exfat "${inv_dev}" "${inv_mnt}" 2>/dev/null; then
+                    touch "${inv_mnt}/.rw_probe" 2>/dev/null && rm -f "${inv_mnt}/.rw_probe" && _actually_rw=1
+                fi
+            fi
+
+            # Phase 2: Copy PDF only if we confirmed real writability.
+            if [[ ${_actually_rw} -eq 1 ]]; then
                 local ts
                 ts="$(date +%Y%m%d_%H%M%S)"
                 if cp "${outdir}/reporte_generado.pdf" \
@@ -440,12 +475,16 @@ _run_diagnostic() {
                     sync
                     echo -e "${GRN}     [+] Auto-saved to INVARIANT partition${RST}"
                 else
-                    echo -e "${YLW}     [!] Auto-save copy failed (read-only?)${RST}"
+                    echo -e "${YLW}     [!] Auto-save copy failed (filesystem full?)${RST}"
                 fi
-                umount "${inv_mnt}" 2>/dev/null || true
             else
-                echo -e "${YLW}     [!] Could not mount INVARIANT partition (dirty bit?)${RST}"
+                echo -e "${YLW}     [!] INVARIANT partition is read-only (dirty bit).${RST}"
+                echo -e "${YLW}         PDF remains available at: ${outdir}/reporte_generado.pdf${RST}"
             fi
+
+            # Phase 3: Clean unmount to clear the exFAT dirty bit.
+            sync
+            umount "${inv_mnt}" 2>/dev/null || true
         fi
         echo ""
         echo -e "${GRN}════════════════════════════════════════════════════════════${RST}"
@@ -548,8 +587,7 @@ cat > "${ISO_ROOT}/airootfs/etc/systemd/system/invariant-probe.service" << 'SERV
 [Unit]
 Description=INVARIANT Ring-0 Boot Menu
 Documentation=https://invariant-web.alaska45l.workers.dev/
-After=multi-user.target
-Conflicts=getty@tty1.service
+After=multi-user.target kmscon@tty1.service
 ConditionPathExists=/root/launcher.sh
 # Prevent infinite restart loops on persistent faults.
 StartLimitIntervalSec=30s
@@ -588,9 +626,11 @@ ln -sf \
     "/etc/systemd/system/invariant-probe.service" \
     "${ISO_ROOT}/airootfs/etc/systemd/system/multi-user.target.wants/invariant-probe.service"
 
-# tty1 is exclusively owned by invariant-probe.
-ln -sf /dev/null \
-    "${ISO_ROOT}/airootfs/etc/systemd/system/getty@tty1.service"
+# kmscon provides DRM/KMS hardware-accelerated terminal on tty1.
+# invariant-probe.service runs launcher.sh on top of it.
+ln -sf \
+    "/usr/lib/systemd/system/kmscon@.service" \
+    "${ISO_ROOT}/airootfs/etc/systemd/system/multi-user.target.wants/kmscon@tty1.service"
 
 # ════════════════════════════════════════════════════════════
 # SECTION 9 — Silent boot suppression (FIX-15)
@@ -628,7 +668,7 @@ cat > "${ISO_ROOT}/efiboot/loader/entries/01-probe-tex.conf" << 'EFIENTRY'
 title   INVARIANT probe.tex // Forensic Diagnostic
 linux   /arch/boot/x86_64/vmlinuz-linux
 initrd  /arch/boot/x86_64/initramfs-linux.img
-options archisobasedir=arch archisolabel=PROBE_TEX archisodelay=5 console=tty0 quiet loglevel=3
+options archisobasedir=arch archisolabel=PROBE_TEX archisodelay=5 console=tty0 quiet loglevel=3 rd.systemd.show_status=auto rd.udev.log_level=3 vt.global_cursor_default=0
 EFIENTRY
 
 cat > "${ISO_ROOT}/syslinux/syslinux.cfg" << 'SYSLINUX'
@@ -647,7 +687,7 @@ LABEL probe-tex
   MENU LABEL  INVARIANT probe.tex // Ring-0 Forensic Diagnostic
   LINUX  /arch/boot/x86_64/vmlinuz-linux
   INITRD /arch/boot/x86_64/initramfs-linux.img
-  APPEND archisobasedir=arch archisolabel=PROBE_TEX archisodelay=5 console=tty0 quiet loglevel=3
+  APPEND archisobasedir=arch archisolabel=PROBE_TEX archisodelay=5 console=tty0 quiet loglevel=3 rd.systemd.show_status=auto rd.udev.log_level=3 vt.global_cursor_default=0
 SYSLINUX
 
 # FIX-15 layer 4: kernel-level firstboot suppression (idempotent).

@@ -962,7 +962,11 @@ def _write_bound_license(
         + enc(sig).rstrip(b"=").decode("ascii")
     )
 
-    # Mount INVARIANT partition read-write
+    # Mount INVARIANT partition read-write.
+    # CRITICAL: We do NOT remount to RO after writing. The exFAT driver
+    # sets the volume dirty bit on any mount transition, and a subsequent
+    # remount,rw on a dirty exFAT volume is silently ignored by the kernel.
+    # Keeping the filesystem RW for the entire session avoids this trap.
     _mount_invariant_rw()
 
     try:
@@ -979,8 +983,6 @@ def _write_bound_license(
             f"[LICENSE DEBUG] LICENSE_WRITE_FAILED: {type(exc).__name__}: {exc}\n"
         )
         raise LicenseError("LICENSE_WRITE_FAILED") from exc
-    finally:
-        _remount_invariant_ro()
 
 
 def _mount_invariant_rw() -> None:
@@ -995,14 +997,16 @@ def _mount_invariant_rw() -> None:
 
 
 def _remount_invariant_ro() -> None:
-    """Remounts the INVARIANT partition as read-only."""
-    try:
-        subprocess.run(
-            ["mount", "-o", "remount,ro", str(_LICENSE_DIR)],
-            capture_output=True, timeout=5, check=False,
-        )
-    except Exception as exc:
-        _log.warning("Failed to remount INVARIANT ro: %s", exc)
+    """DEPRECATED — No-op.
+
+    Previously remounted the INVARIANT partition to read-only after writing
+    the bound license. This has been disabled because the exFAT driver sets
+    the volume dirty bit on mount-state transitions, and a subsequent
+    remount,rw on a dirty exFAT volume is silently ignored by the kernel,
+    breaking the auto-save persistence flow.
+    """
+    # Intentionally no-op. The filesystem stays RW for the session.
+    pass
 
 
 def _read_file_safe(target: Path) -> str | None:

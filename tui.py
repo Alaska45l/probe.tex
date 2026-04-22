@@ -1,6 +1,13 @@
 """
 tui.py — INVARIANT Terminal Interface
 probe.tex // Live OS Diagnostic — Ring-0 Edition
+
+PILLAR 1: Delta-Update Architecture
+───────────────────────────────────
+Static components (TargetTopology) are built once and cached.
+Only dynamic components (Header clock, LogStream, StatusBar) are
+re-instantiated per frame. Live(screen=True) leverages kmscon's
+DRM-backed alternate buffer for zero-flicker rendering.
 """
 from __future__ import annotations
 
@@ -145,12 +152,10 @@ class Header:
     def __rich__(self) -> Panel:
         from rich.table import Table
         
-        # Grid invisible que fuerza la expansión de borde a borde
         grid = Table.grid(expand=True)
         grid.add_column(justify="left")
         grid.add_column(justify="right")
         
-        # Ensamblaje del texto derecho (Reloj blanco + Título táctico)
         t = self.state.mission_clock()
         right_text = Text(f"T+ {t}  |  ", style=C.white)
         right_text.append("probe.tex // Live OS Diagnostic", style=C.accent)
@@ -189,7 +194,6 @@ class TargetTopology:
     def __rich__(self) -> Panel:
         lines: list[Text] = []
         for i, (label, value) in enumerate(self._rows):
-            # Separador tras el bloque de identidad del SO (después de ARCH)
             if i == 4:
                 lines.append(Text("─" * 32, style=C.dimgrey))
             row = Text()
@@ -269,7 +273,8 @@ class StatusBar:
         )
 
 
-def _compose(state: TuiState) -> Layout:
+def _compose(state: TuiState, topology_layout: Layout) -> Layout:
+    """Assemble layout reusing the cached static topology panel."""
     root = Layout(name="root")
     root.split_column(
         Layout(Header(state),     name="header", size=3),
@@ -277,7 +282,7 @@ def _compose(state: TuiState) -> Layout:
         Layout(StatusBar(state),  name="status", size=3),
     )
     root["body"].split_row(
-        Layout(TargetTopology(),  name="topology", ratio=1),
+        topology_layout,
         Layout(LogStream(state),  name="logs",     ratio=2),
     )
     return root
@@ -288,107 +293,56 @@ def _compose(state: TuiState) -> Layout:
 def run_tui(target_func: Callable[[], None]) -> None:
     global _ACTIVE_STATE
 
-    # FIX: Aggressive instrumentation to trace TUI initialization
-    sys.stderr.write("[TUI-DEBUG] run_tui() entered\n")
-    sys.stderr.flush()
-
-    # FIX: Force terminal detection. On a Linux TTY after input(),
-    # auto-detection can fail or hang querying capabilities.
     console = Console(force_terminal=True)
-    sys.stderr.write("[TUI-DEBUG] Console initialized (force_terminal=True)\n")
-    sys.stderr.flush()
-
-    state = TuiState()
+    state   = TuiState()
     _ACTIVE_STATE = state
     state.start()
-    sys.stderr.write("[TUI-DEBUG] TuiState started\n")
-    sys.stderr.flush()
 
     done_event = Event()
-    FPS: Final = 15
+    FPS: Final = 4          # Delta-update: 4 Hz is sufficient for TTY readability
     ASSUMED_S  = 45.0
 
+    # Build static topology once — never rebuilds during the session.
+    topology_layout = Layout(TargetTopology(), name="topology", ratio=1)
+
     def _worker() -> None:
-        sys.stderr.write("[TUI-DEBUG] _worker thread started\n")
-        sys.stderr.flush()
         state.update(phase=Phase.RUNNING, log="Mounting sysfs namespace...")
         try:
             target_func()
             state.update(phase=Phase.DONE, log="Extraction complete. Contract sealed.", pct=100.0)
-            sys.stderr.write("[TUI-DEBUG] target_func() completed successfully\n")
-            sys.stderr.flush()
         except Exception as exc:
-            sys.stderr.write(f"[TUI-DEBUG] _worker exception: {type(exc).__name__}: {exc}\n")
-            sys.stderr.flush()
             state.update(phase=Phase.ERROR, log=f"FAULT: {exc}")
             raise
         finally:
-            sys.stderr.write("[TUI-DEBUG] _worker setting done_event\n")
-            sys.stderr.flush()
             done_event.set()
 
     with ThreadPoolExecutor(max_workers=1) as pool:
-        sys.stderr.write("[TUI-DEBUG] ThreadPoolExecutor created\n")
-        sys.stderr.flush()
         future: Future[None] = pool.submit(_worker)
-        sys.stderr.write("[TUI-DEBUG] _worker submitted to pool\n")
-        sys.stderr.flush()
 
-        # FIX: Clear screen manually before Rich takes over.
-        # We do NOT use Live(screen=True) because the Linux TTY alternate
-        # screen buffer is unreliable and can hang after input() + ANSI clears.
-        sys.stdout.write("\033[2J\033[H")
-        sys.stdout.flush()
-        sys.stderr.write("[TUI-DEBUG] Screen cleared manually\n")
-        sys.stderr.flush()
+        # kmscon provides a DRM-backed terminal where screen=True works reliably.
+        with Live(
+            _compose(state.snapshot(), topology_layout),
+            console=console,
+            screen=True,
+            refresh_per_second=FPS,
+            transient=False,
+        ) as live:
+            start_t = time.monotonic()
 
-        sys.stderr.write("[TUI-DEBUG] About to enter Live context...\n")
-        sys.stderr.flush()
+            while not done_event.is_set():
+                elapsed = time.monotonic() - start_t
+                pct     = min(99.0, (elapsed / ASSUMED_S) * 100)
 
-        try:
-            with Live(
-                _compose(state.snapshot()),
-                console=console,
-                # FIX: screen=False — Linux TTY alternate screen buffer can
-                # cause hangs after input() and manual ANSI clears.
-                screen=False,
-                refresh_per_second=10,
-                transient=False,
-            ) as live:
-                sys.stderr.write("[TUI-DEBUG] Live context entered successfully\n")
-                sys.stderr.flush()
-                start_t = time.monotonic()
+                state.update(pct=pct)
+                live.update(_compose(state.snapshot(), topology_layout), refresh=True)
+                time.sleep(1 / FPS)
 
-                frame = 0
-                while not done_event.is_set():
-                    frame += 1
-                    elapsed = time.monotonic() - start_t
-                    pct     = min(99.0, (elapsed / ASSUMED_S) * 100)
-
-                    state.update(pct=pct)
-                    live.update(_compose(state.snapshot()), refresh=True)
-                    time.sleep(1 / FPS)
-
-                sys.stderr.write(f"[TUI-DEBUG] Worker done after {frame} frames\n")
-                sys.stderr.flush()
-                live.update(_compose(state.snapshot()), refresh=True)
-                time.sleep(0.5)
-        except Exception as exc:
-            sys.stderr.write(f"[TUI-DEBUG] Live context exception: {type(exc).__name__}: {exc}\n")
-            sys.stderr.flush()
-            raise
-
-    sys.stderr.write("[TUI-DEBUG] Exited ThreadPoolExecutor context\n")
-    sys.stderr.flush()
+            live.update(_compose(state.snapshot(), topology_layout), refresh=True)
+            time.sleep(0.5)
 
     exc = future.exception()
     if exc is not None:
-        sys.stderr.write(f"[TUI-DEBUG] Worker raised exception: {type(exc).__name__}: {exc}\n")
-        sys.stderr.flush()
         raise RuntimeError(f"probe.tex fault: {exc}") from exc
-
-    sys.stderr.write("[TUI-DEBUG] run_tui() returning normally\n")
-    sys.stderr.flush()
 
 
 if __name__ == "__main__":

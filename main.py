@@ -409,8 +409,10 @@ def render_pdf(outdir: Path | None = None) -> None:
     tex_path.write_text(template.render(**context), encoding="utf-8")
 
     # ── Compilación tectonic (OFFLINE — caché pre-cargada) ───────────────────
-    # DIRECTIVA CRÍTICA: --cache-dir apunta al caché offline inyectado en la
-    # ISO. NO se añaden --keep-logs, --web, ni otras flags que requieran red.
+    # DIRECTIVA CRÍTICA: TECTONIC_CACHE_DIR apunta al caché offline inyectado
+    # en la ISO. NO se añaden --keep-logs, --web, ni otras flags que requieran
+    # red. La flag --cache-dir fue eliminada en tectonic ≥ 0.9; usamos la
+    # variable de entorno, que es estable entre versiones.
     runtime_log("Tectonic: Compiling forensic report (offline cache)...")
     _log.info("tectonic: cache=%s tex=%s out=%s", _TECTONIC_CACHE_DIR, tex_path, out)
 
@@ -418,8 +420,7 @@ def render_pdf(outdir: Path | None = None) -> None:
         subprocess.run(
             [
                 "tectonic",
-                "--cache-dir", str(_TECTONIC_CACHE_DIR),
-                "--outdir",    str(out),
+                "--outdir", str(out),
                 str(tex_path),
             ],
             check  = True,
@@ -427,6 +428,7 @@ def render_pdf(outdir: Path | None = None) -> None:
             stderr = subprocess.PIPE,
             text   = True,
             timeout= 120,
+            env    = {**os.environ, "TECTONIC_CACHE_DIR": str(_TECTONIC_CACHE_DIR)},
         )
         pdf_path = out / "reporte_generado.pdf"
         _log.info("PDF compiled successfully: %s", pdf_path)
