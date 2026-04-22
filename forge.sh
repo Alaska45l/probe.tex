@@ -227,6 +227,26 @@ mkdir -p \
 printf 'root::0:0:99999:7:::\n' > "${ISO_ROOT}/airootfs/etc/shadow"
 
 # ════════════════════════════════════════════════════════════
+# SECTION 2b — Locale & UTF-8 runtime guarantee (FIX-RING-0)
+#
+# The minimal Arch chroot used by mkarchiso does NOT generate locales
+# by default. Without en_US.UTF-8 present, Python falls back to
+# ANSI_X3.4-1968 and Unicode rendering crashes with UnicodeEncodeError.
+# We copy the host's locale archive and pin the default locale.
+# ════════════════════════════════════════════════════════════
+readonly HOST_LOCALE_ARCHIVE="/usr/lib/locale/locale-archive"
+if [[ -f "${HOST_LOCALE_ARCHIVE}" ]]; then
+    mkdir -p "${ISO_ROOT}/airootfs/usr/lib/locale"
+    cp "${HOST_LOCALE_ARCHIVE}" \
+        "${ISO_ROOT}/airootfs/usr/lib/locale/locale-archive"
+    chmod 644 "${ISO_ROOT}/airootfs/usr/lib/locale/locale-archive"
+else
+    die "Host locale archive not found at ${HOST_LOCALE_ARCHIVE}. Generate it: sudo locale-gen"
+fi
+
+printf 'LANG=en_US.UTF-8\n' > "${ISO_ROOT}/airootfs/etc/locale.conf"
+
+# ════════════════════════════════════════════════════════════
 # SECTION 3 — mkinitcpio.conf
 #
 # Written to both the profile root (read by mkarchiso for initramfs
@@ -382,7 +402,14 @@ _run_diagnostic() {
 
     rm -f "${outdir}/reporte_generado.pdf" "${outdir}/reporte_generado.tex"
 
-    if python main.py --outdir "${outdir}"; then
+    # Ejecuta Python con captura determinista de stderr.
+    # Usa procesos sustituidos + wait para garantizar flush completo
+    # antes de que el shell continúe (evita race condition en tee).
+    python main.py --outdir "${outdir}" > >(cat) 2> >(tee -a /tmp/invariant_error.log >&2)
+    local rc=$?
+    wait  # Espera a que los subshells de tee terminen de flushear
+
+    if [[ ${rc} -eq 0 ]]; then
         # Auto-save: attempt to mount INVARIANT partition and copy report.
         local inv_dev inv_mnt="/mnt/invariant_data"
         inv_dev="$(blkid -L INVARIANT 2>/dev/null || true)"
@@ -410,7 +437,12 @@ _run_diagnostic() {
         echo -e "${GRN}════════════════════════════════════════════════════════════${RST}"
     else
         echo ""
-        echo -e "${RED}[✗] El diagnóstico terminó con errores. Revise el log arriba.${RST}"
+        echo -e "${RED}[✗] El diagnóstico terminó con errores.${RST}"
+        if [[ -s /tmp/invariant_error.log ]]; then
+            echo -e "${RED}--- Últimas líneas del log de error ---${RST}"
+            tail -n 20 /tmp/invariant_error.log
+            echo -e "${RED}---------------------------------------${RST}"
+        fi
     fi
 
     echo ""
@@ -502,6 +534,9 @@ Documentation=https://invariant.systems/probe-tex
 After=multi-user.target
 Conflicts=getty@tty1.service
 ConditionPathExists=/root/launcher.sh
+# Prevent infinite restart loops on persistent faults.
+StartLimitIntervalSec=30s
+StartLimitBurst=3
 
 [Service]
 Type=idle
@@ -510,12 +545,22 @@ StandardOutput=tty
 StandardInput=tty
 StandardError=tty
 TTYPath=/dev/tty1
-TTYReset=yes
-TTYVHangup=yes
-TTYVTDisallocate=yes
+
+# --- FIX RING-0: Entorno para Python y Unicode ---
+Environment=LANG=en_US.UTF-8
+Environment=LC_ALL=en_US.UTF-8
+Environment=TERM=linux
+Environment=PYTHONUNBUFFERED=1
+# Force Python stdio to UTF-8 regardless of locale misconfiguration.
+Environment=PYTHONIOENCODING=utf-8
+
+# --- FIX RING-0: Preserve TTY state on failure ---
+TTYReset=no
+TTYVHangup=no
+TTYVTDisallocate=no
 KillMode=process
-Restart=on-failure
-RestartSec=2s
+# Halt on failure so the technician can read the traceback on-screen.
+Restart=no
 
 [Install]
 WantedBy=multi-user.target

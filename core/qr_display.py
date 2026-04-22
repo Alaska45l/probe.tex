@@ -122,8 +122,9 @@ def display_activation_screen(
     if len(session_display) >= 8:
         session_display = session_display[:4] + "-" + session_display[4:8]
 
-    # Clear screen and render
-    os.system("clear")
+    # Clear screen via ANSI escapes (no external binary dependency)
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
     qr_art = _render_qr_to_terminal(challenge_url)
 
@@ -141,6 +142,7 @@ def display_activation_screen(
     print(f"  {_DIM}Válido por   :{_RST} {_WHT}{timeout_seconds // 60} minutos{_RST}")
     print(f"{_RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{_RST}")
     print()
+    sys.stdout.flush()
 
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):

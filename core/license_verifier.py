@@ -53,6 +53,7 @@ import json as _json
 import logging
 import os
 import secrets as _secrets
+import sys
 import stat as _stat
 import struct
 import subprocess
@@ -251,8 +252,13 @@ def _read_hardware_rtc() -> datetime:
         try:
             return fn()
         except Exception as exc:
-            _log.debug("RTC reader %s failed: %s", fn.__name__, exc)
+            _log.error("RTC reader %s failed: %s", fn.__name__, exc, exc_info=True)
+            sys.stderr.write(
+                f"[LICENSE DEBUG] RTC reader {fn.__name__} failed: "
+                f"{type(exc).__name__}: {exc}\n"
+            )
 
+    sys.stderr.write("[LICENSE DEBUG] All RTC readers failed. Cannot determine hardware time.\n")
     raise LicenseError("RTC_READ_FAILURE")
 
 
@@ -275,7 +281,12 @@ def _read_dmi(field: str) -> str | None:
         )
         val = result.stdout.strip()
         return val if val.lower() not in _DMI_INVALID_VALUES else None
-    except Exception:
+    except Exception as exc:
+        _log.error("DMI read failed for field=%s: %s", field, exc, exc_info=True)
+        sys.stderr.write(
+            f"[LICENSE DEBUG] DMI read failed for field={field}: "
+            f"{type(exc).__name__}: {exc}\n"
+        )
         return None
 
 def _read_cpuid() -> str | None:
@@ -297,7 +308,10 @@ def _read_cpuid() -> str | None:
             # Strip whitespace and normalize to uppercase hex
             return match.group(1).strip().replace(" ", "").upper()
     except Exception as exc:
-        _log.debug("Failed to read CPUID: %s", exc)
+        _log.error("Failed to read CPUID: %s", exc, exc_info=True)
+        sys.stderr.write(
+            f"[LICENSE DEBUG] CPUID read failed: {type(exc).__name__}: {exc}\n"
+        )
     return None
 
 def _read_tpm_hash() -> str | None:
@@ -318,7 +332,10 @@ def _read_tpm_hash() -> str | None:
             # Hash the stdout to normalize
             return hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
     except Exception as exc:
-        _log.debug("tpm2_readpublic failed: %s", exc)
+        _log.error("tpm2_readpublic failed: %s", exc, exc_info=True)
+        sys.stderr.write(
+            f"[LICENSE DEBUG] tpm2_readpublic failed: {type(exc).__name__}: {exc}\n"
+        )
 
     # Strategy 2: Direct sysfs read (fallback if tools aren't installed)
     ek_path = Path("/sys/class/tpm/tpm0/device/ek_pub")
@@ -328,7 +345,10 @@ def _read_tpm_hash() -> str | None:
             if data:
                 return hashlib.sha256(data).hexdigest()
     except Exception as exc:
-        _log.debug("sysfs TPM read failed: %s", exc)
+        _log.error("sysfs TPM read failed: %s", exc, exc_info=True)
+        sys.stderr.write(
+            f"[LICENSE DEBUG] sysfs TPM read failed: {type(exc).__name__}: {exc}\n"
+        )
 
     return None
 
@@ -377,6 +397,14 @@ def compute_hardware_fingerprint() -> str:
         _log.debug("Fingerprint component: tpm:ek=<redacted>")
 
     if not components:
+        _log.error(
+            "FINGERPRINT_UNAVAILABLE: no hardware anchors found. "
+            "DMI fields attempted: %s", _DMI_FIELDS
+        )
+        sys.stderr.write(
+            "[LICENSE DEBUG] FINGERPRINT_UNAVAILABLE: no hardware anchors found. "
+            f"DMI fields attempted: {_DMI_FIELDS}\n"
+        )
         raise LicenseError("FINGERPRINT_UNAVAILABLE")
 
     # Sorted + NUL-joined: deterministic regardless of collection order.
@@ -476,19 +504,47 @@ def _split_token(raw: str) -> tuple[bytes, bytes]:
     """
     parts = raw.split(".")
     if len(parts) != 2 or not parts[0] or not parts[1]:
+        _log.error("TOKEN_MALFORMED: raw[:50]=%r", raw[:50])
+        sys.stderr.write(
+            f"[LICENSE DEBUG] TOKEN_MALFORMED: raw[:50]={raw[:50]!r}\n"
+        )
         raise LicenseError("TOKEN_MALFORMED")
 
     try:
         json_bytes = _urlsafe_b64decode(parts[0])
-    except Exception:
+    except Exception as exc:
+        _log.error(
+            "TOKEN_PAYLOAD_ENCODING_INVALID: %s — raw[:50]=%r",
+            exc, raw[:50], exc_info=True,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] TOKEN_PAYLOAD_ENCODING_INVALID: {type(exc).__name__}: {exc} "
+            f"— raw[:50]={raw[:50]!r}\n"
+        )
         raise LicenseError("TOKEN_PAYLOAD_ENCODING_INVALID")
 
     try:
         sig_bytes = _urlsafe_b64decode(parts[1])
-    except Exception:
+    except Exception as exc:
+        _log.error(
+            "TOKEN_SIGNATURE_ENCODING_INVALID: %s — raw[:50]=%r",
+            exc, raw[:50], exc_info=True,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] TOKEN_SIGNATURE_ENCODING_INVALID: {type(exc).__name__}: {exc} "
+            f"— raw[:50]={raw[:50]!r}\n"
+        )
         raise LicenseError("TOKEN_SIGNATURE_ENCODING_INVALID")
 
     if len(sig_bytes) != 64:
+        _log.error(
+            "TOKEN_SIGNATURE_SIZE_INVALID: expected=64 got=%d — raw[:50]=%r",
+            len(sig_bytes), raw[:50],
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] TOKEN_SIGNATURE_SIZE_INVALID: expected=64 got={len(sig_bytes)} "
+            f"— raw[:50]={raw[:50]!r}\n"
+        )
         raise LicenseError(f"TOKEN_SIGNATURE_SIZE_INVALID:{len(sig_bytes)}")
 
     return json_bytes, sig_bytes
@@ -506,19 +562,36 @@ def _get_verify_key() -> VerifyKey:
     """
     try:
         pubkey_bytes = bytes.fromhex(_EMBEDDED_PUBKEY_HEX)
-    except ValueError:
+    except ValueError as exc:
+        _log.error(
+            "PUBKEY_HEX_MALFORMED: _EMBEDDED_PUBKEY_HEX=%r...",
+            _EMBEDDED_PUBKEY_HEX[:20], exc_info=True,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] PUBKEY_HEX_MALFORMED: {type(exc).__name__}: {exc}\n"
+        )
         raise LicenseError("PUBKEY_HEX_MALFORMED")
 
     if len(pubkey_bytes) != 32:
+        _log.error("PUBKEY_SIZE_INVALID: expected=32 got=%d", len(pubkey_bytes))
+        sys.stderr.write(
+            f"[LICENSE DEBUG] PUBKEY_SIZE_INVALID: expected=32 got={len(pubkey_bytes)}\n"
+        )
         raise LicenseError(f"PUBKEY_SIZE_INVALID:{len(pubkey_bytes)}")
 
     # Additional guard: reject all-zero key (placeholder was not replaced)
     if pubkey_bytes == bytes(32):
+        _log.error("PUBKEY_IS_PLACEHOLDER_ZERO")
+        sys.stderr.write("[LICENSE DEBUG] PUBKEY_IS_PLACEHOLDER_ZERO\n")
         raise LicenseError("PUBKEY_IS_PLACEHOLDER_ZERO")
 
     try:
         return VerifyKey(pubkey_bytes)
     except Exception as exc:
+        _log.error("PUBKEY_CONSTRUCTION_FAILED: %s", exc, exc_info=True)
+        sys.stderr.write(
+            f"[LICENSE DEBUG] PUBKEY_CONSTRUCTION_FAILED: {type(exc).__name__}: {exc}\n"
+        )
         raise LicenseError("PUBKEY_CONSTRUCTION_FAILED") from exc
 
 
@@ -540,8 +613,22 @@ def _verify_signature(
     try:
         verify_key.verify(json_bytes, sig_bytes)
     except nacl.exceptions.BadSignatureError:
+        _log.error(
+            "SIGNATURE_INVALID: json_bytes[:50]=%r sig_bytes[:50]=%r",
+            json_bytes[:50], sig_bytes[:50],
+        )
+        sys.stderr.write(
+            "[LICENSE DEBUG] SIGNATURE_INVALID: Ed25519 signature does not match payload.\n"
+        )
         raise LicenseError("SIGNATURE_INVALID")
     except Exception as exc:
+        _log.error(
+            "SIGNATURE_VERIFY_ERROR: %s — json_bytes[:50]=%r sig_bytes[:50]=%r",
+            exc, json_bytes[:50], sig_bytes[:50], exc_info=True,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] SIGNATURE_VERIFY_ERROR: {type(exc).__name__}: {exc}\n"
+        )
         raise LicenseError("SIGNATURE_VERIFY_ERROR") from exc
 
 
@@ -563,6 +650,14 @@ def _parse_payload(json_bytes: bytes) -> LicensePayload:
     try:
         data: object = _json.loads(json_bytes.decode("utf-8"))
     except (UnicodeDecodeError, _json.JSONDecodeError) as exc:
+        _log.error(
+            "PAYLOAD_DECODE_FAILED: %s — json_bytes[:50]=%r",
+            exc, json_bytes[:50], exc_info=True,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] PAYLOAD_DECODE_FAILED: {type(exc).__name__}: {exc} "
+            f"— json_bytes[:50]={json_bytes[:50]!r}\n"
+        )
         raise LicenseError("PAYLOAD_DECODE_FAILED") from exc
 
     if not isinstance(data, dict):
@@ -713,6 +808,14 @@ def _parse_bootstrap_payload(json_bytes: bytes) -> BootstrapPayload:
     try:
         data: object = _json.loads(json_bytes.decode("utf-8"))
     except (UnicodeDecodeError, _json.JSONDecodeError) as exc:
+        _log.error(
+            "BOOTSTRAP_DECODE_FAILED: %s — json_bytes[:50]=%r",
+            exc, json_bytes[:50], exc_info=True,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] BOOTSTRAP_DECODE_FAILED: {type(exc).__name__}: {exc} "
+            f"— json_bytes[:50]={json_bytes[:50]!r}\n"
+        )
         raise LicenseError("BOOTSTRAP_DECODE_FAILED") from exc
 
     if not isinstance(data, dict):
@@ -871,6 +974,10 @@ def _write_bound_license(
             _BOOTSTRAP_FILE.unlink()
             _log.info("Bootstrap token consumed (deleted)")
     except OSError as exc:
+        _log.error("LICENSE_WRITE_FAILED: %s", exc, exc_info=True)
+        sys.stderr.write(
+            f"[LICENSE DEBUG] LICENSE_WRITE_FAILED: {type(exc).__name__}: {exc}\n"
+        )
         raise LicenseError("LICENSE_WRITE_FAILED") from exc
     finally:
         _remount_invariant_ro()
@@ -907,26 +1014,48 @@ def _read_file_safe(target: Path) -> str | None:
         lstat_result = target.lstat()
     except FileNotFoundError:
         return None
-    except OSError:
+    except OSError as exc:
+        _log.error("File safe-read stat failed: %s — %s", target, exc, exc_info=True)
+        sys.stderr.write(
+            f"[LICENSE DEBUG] File safe-read stat failed: {target} — "
+            f"{type(exc).__name__}: {exc}\n"
+        )
         return None
 
     if _stat.S_ISLNK(lstat_result.st_mode):
+        _log.warning("File safe-read rejected symlink: %s", target)
         return None
     if not _stat.S_ISREG(lstat_result.st_mode):
+        _log.warning("File safe-read rejected non-regular: %s", target)
         return None
     if lstat_result.st_size == 0 or lstat_result.st_size > _LICENSE_MAX_BYTES:
+        _log.warning(
+            "File safe-read rejected size=%d for %s", lstat_result.st_size, target
+        )
         return None
 
     try:
         real_path = target.resolve(strict=True)
         real_dir = _LICENSE_DIR.resolve()
         real_path.relative_to(real_dir)
-    except (ValueError, OSError):
+    except (ValueError, OSError) as exc:
+        _log.error("File safe-read path traversal: %s — %s", target, exc, exc_info=True)
+        sys.stderr.write(
+            f"[LICENSE DEBUG] File safe-read path traversal: {target} — "
+            f"{type(exc).__name__}: {exc}\n"
+        )
         return None
 
     try:
-        return target.read_text(encoding="ascii").strip()
-    except Exception:
+        raw = target.read_text(encoding="ascii").strip()
+        _log.info("File safe-read OK: %s (len=%d)", target, len(raw))
+        return raw
+    except Exception as exc:
+        _log.error("File safe-read failed: %s — %s", target, exc, exc_info=True)
+        sys.stderr.write(
+            f"[LICENSE DEBUG] File safe-read failed: {target} — "
+            f"{type(exc).__name__}: {exc}\n"
+        )
         return None
 
 
@@ -940,24 +1069,52 @@ def _verify_bound_license(raw_token: str, rtc_now: datetime) -> LicensePayload:
     """
     parts = raw_token.split(".")
     if len(parts) != 2 or not parts[0] or not parts[1]:
+        _log.error("BOUND_TOKEN_MALFORMED: raw[:50]=%r", raw_token[:50])
+        sys.stderr.write(
+            f"[LICENSE DEBUG] BOUND_TOKEN_MALFORMED: raw[:50]={raw_token[:50]!r}\n"
+        )
         raise LicenseError("BOUND_TOKEN_MALFORMED")
 
     try:
         pad = (-len(parts[0])) % 4
         json_bytes = base64.urlsafe_b64decode(parts[0] + "=" * pad)
-    except Exception:
+    except Exception as exc:
+        _log.error(
+            "BOUND_PAYLOAD_ENCODING_INVALID: %s — raw[:50]=%r",
+            exc, raw_token[:50], exc_info=True,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] BOUND_PAYLOAD_ENCODING_INVALID: {type(exc).__name__}: {exc} "
+            f"— raw[:50]={raw_token[:50]!r}\n"
+        )
         raise LicenseError("BOUND_PAYLOAD_ENCODING_INVALID")
 
     try:
         pad = (-len(parts[1])) % 4
         sig_bytes = base64.urlsafe_b64decode(parts[1] + "=" * pad)
-    except Exception:
+    except Exception as exc:
+        _log.error(
+            "BOUND_SIGNATURE_ENCODING_INVALID: %s — raw[:50]=%r",
+            exc, raw_token[:50], exc_info=True,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] BOUND_SIGNATURE_ENCODING_INVALID: {type(exc).__name__}: {exc} "
+            f"— raw[:50]={raw_token[:50]!r}\n"
+        )
         raise LicenseError("BOUND_SIGNATURE_ENCODING_INVALID")
 
     # Parse payload first to extract activation_secret for HMAC verification
     try:
         data = _json.loads(json_bytes.decode("utf-8"))
-    except Exception:
+    except Exception as exc:
+        _log.error(
+            "BOUND_PAYLOAD_DECODE_FAILED: %s — json_bytes[:50]=%r",
+            exc, json_bytes[:50], exc_info=True,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] BOUND_PAYLOAD_DECODE_FAILED: {type(exc).__name__}: {exc} "
+            f"— json_bytes[:50]={json_bytes[:50]!r}\n"
+        )
         raise LicenseError("BOUND_PAYLOAD_DECODE_FAILED")
 
     if not isinstance(data, dict):
@@ -1055,6 +1212,14 @@ def _verify_bound_license_flow(raw_token: str, rtc_now: datetime) -> LicensePayl
     This is the original flow for server-signed licenses + the new path
     for locally-bound licenses written after QR activation.
     """
+    _log.info(
+        "BOUND_LICENSE_FLOW: raw[:50]=%r rtc_now=%s",
+        raw_token[:50], rtc_now.isoformat(),
+    )
+    sys.stderr.write(
+        f"[LICENSE DEBUG] BOUND_LICENSE_FLOW: raw[:50]={raw_token[:50]!r} "
+        f"rtc_now={rtc_now.isoformat()}\n"
+    )
     json_bytes, sig_bytes = _split_token(raw_token)
     verify_key = _get_verify_key()
 
@@ -1063,9 +1228,16 @@ def _verify_bound_license_flow(raw_token: str, rtc_now: datetime) -> LicensePayl
         _verify_signature(json_bytes, sig_bytes, verify_key)
         _log.info("Signature: VALID (Ed25519)")
         payload = _parse_payload(json_bytes)
-    except LicenseError:
+    except LicenseError as exc:
         # Fallback: try HMAC verification (locally-bound license from activation)
-        _log.debug("Ed25519 verification failed, trying HMAC bound license")
+        _log.error(
+            "Ed25519 verification failed (code=%s), trying HMAC bound license fallback",
+            exc.code,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] Ed25519 path failed: {exc.code}, "
+            f"attempting HMAC bound license fallback\n"
+        )
         payload = _verify_bound_license(raw_token, rtc_now)
 
     # Time constraints
@@ -1102,6 +1274,15 @@ def _verify_bootstrap_activation_flow(
     7. Write hardware-bound license
     8. Return payload
     """
+    _log.info(
+        "BOOTSTRAP_FLOW: raw[:50]=%r rtc_now=%s",
+        raw_token[:50], rtc_now.isoformat(),
+    )
+    sys.stderr.write(
+        f"[LICENSE DEBUG] BOOTSTRAP_FLOW: raw[:50]={raw_token[:50]!r} "
+        f"rtc_now={rtc_now.isoformat()}\n"
+    )
+
     from core.qr_display import (
         display_activation_screen,
         display_activation_success,
@@ -1120,10 +1301,26 @@ def _verify_bootstrap_activation_flow(
     # Step 3: Check expiry
     rtc_unix = int(rtc_now.timestamp())
     if rtc_unix >= bootstrap.expires_at:
+        _log.error(
+            "BOOTSTRAP_EXPIRED: rtc_unix=%d expires_at=%d",
+            rtc_unix, bootstrap.expires_at,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] BOOTSTRAP_EXPIRED: rtc_unix={rtc_unix} "
+            f"expires_at={bootstrap.expires_at}\n"
+        )
         raise LicenseError("BOOTSTRAP_EXPIRED")
 
     # Step 4: Anti-rollback
     if _ISO_BUILD_TIMESTAMP > 0 and rtc_unix < _ISO_BUILD_TIMESTAMP:
+        _log.error(
+            "TIME_ROLLBACK_DETECTED: rtc_unix=%d build_ts=%d",
+            rtc_unix, _ISO_BUILD_TIMESTAMP,
+        )
+        sys.stderr.write(
+            f"[LICENSE DEBUG] TIME_ROLLBACK_DETECTED: rtc_unix={rtc_unix} "
+            f"build_ts={_ISO_BUILD_TIMESTAMP}\n"
+        )
         raise LicenseError("TIME_ROLLBACK_DETECTED")
 
     # Step 5: Compute hardware fingerprint (Quimera Hash)

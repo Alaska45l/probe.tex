@@ -491,35 +491,52 @@ def _render_license_lockscreen(code: str) -> None:
 # ════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    # 1. Gate criptográfico — fail-closed
     try:
-        licencia = verify_license()
-        _log.info(
-            "License validated: plan=%s hw=%s...%s expires=%s",
-            licencia.plan,
-            licencia.hardware_id[:8],
-            licencia.hardware_id[-8:],
-            datetime.fromtimestamp(licencia.expires_at, tz=timezone.utc).date().isoformat(),
+        # 1. Gate criptográfico — fail-closed
+        try:
+            licencia = verify_license()
+            _log.info(
+                "License validated: plan=%s hw=%s...%s expires=%s",
+                licencia.plan,
+                licencia.hardware_id[:8],
+                licencia.hardware_id[-8:],
+                datetime.fromtimestamp(licencia.expires_at, tz=timezone.utc).date().isoformat(),
+            )
+        except LicenseError as exc:
+            _render_license_lockscreen(exc.code)
+
+        # 2. Argumentos CLI
+        parser = argparse.ArgumentParser(
+            prog        = "probe.tex",
+            description = "INVARIANT — Hardware Forensic Diagnostic (Ring-0)",
         )
-    except LicenseError as exc:
-        _render_license_lockscreen(exc.code)
+        parser.add_argument(
+            "--outdir",
+            metavar = "PATH",
+            default = None,
+            help    = (
+                "Output directory for reporte_generado.pdf "
+                "(default: $INVARIANT_OUT, then cwd, then /tmp)"
+            ),
+        )
+        args         = parser.parse_args()
+        final_outdir = _resolve_outdir(args.outdir)
 
-    # 2. Argumentos CLI
-    parser = argparse.ArgumentParser(
-        prog        = "probe.tex",
-        description = "INVARIANT — Hardware Forensic Diagnostic (Ring-0)",
-    )
-    parser.add_argument(
-        "--outdir",
-        metavar = "PATH",
-        default = None,
-        help    = (
-            "Output directory for reporte_generado.pdf "
-            "(default: $INVARIANT_OUT, then cwd, then /tmp)"
-        ),
-    )
-    args         = parser.parse_args()
-    final_outdir = _resolve_outdir(args.outdir)
+        # 3. Diagnóstico forense dentro del TUI
+        run_tui(lambda: render_pdf(final_outdir))
 
-    # 3. Diagnóstico forense dentro del TUI
-    run_tui(lambda: render_pdf(final_outdir))
+    except SystemExit:
+        raise  # Allow intentional exits (e.g., license lockscreen) to propagate.
+    except Exception as exc:
+        # FIX RING-0: Any unhandled exception is logged and printed to stderr
+        # so the technician can see the traceback on the TTY even if the
+        # Rich/Live TUI has already exited or crashed.
+        import traceback
+        _log.critical("FATAL: Unhandled exception in probe.tex main loop", exc_info=True)
+        sys.stderr.write("\n[CRITICAL] probe.tex terminated unexpectedly:\n")
+        sys.stderr.write(f"  {type(exc).__name__}: {exc}\n")
+        sys.stderr.write("\nFull traceback:\n")
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.write(f"\nSee also: {_LOG_FILE}\n")
+        sys.stderr.flush()
+        sys.exit(1)
