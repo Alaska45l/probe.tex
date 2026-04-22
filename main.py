@@ -493,17 +493,19 @@ def _render_license_lockscreen(code: str) -> None:
 if __name__ == "__main__":
     try:
         # 1. Gate criptográfico — fail-closed
-        try:
-            licencia = verify_license()
-            _log.info(
-                "License validated: plan=%s hw=%s...%s expires=%s",
-                licencia.plan,
-                licencia.hardware_id[:8],
-                licencia.hardware_id[-8:],
-                datetime.fromtimestamp(licencia.expires_at, tz=timezone.utc).date().isoformat(),
-            )
-        except LicenseError as exc:
-            _render_license_lockscreen(exc.code)
+        licencia = verify_license()
+        if licencia is None:
+            # This path should never be reached (verify_license raises on failure),
+            # but we guard explicitly to prevent a silent None fall-through.
+            raise RuntimeError("verify_license() returned None without raising")
+
+        _log.info(
+            "License validated: plan=%s hw=%s...%s expires=%s",
+            licencia.plan,
+            licencia.hardware_id[:8],
+            licencia.hardware_id[-8:],
+            datetime.fromtimestamp(licencia.expires_at, tz=timezone.utc).date().isoformat(),
+        )
 
         # 2. Argumentos CLI
         parser = argparse.ArgumentParser(
@@ -522,8 +524,14 @@ if __name__ == "__main__":
         args         = parser.parse_args()
         final_outdir = _resolve_outdir(args.outdir)
 
-        # 3. Diagnóstico forense dentro del TUI
+        # 3. Flush any pending stdout bytes before Rich takes over the terminal
+        sys.stdout.flush()
+
+        # 4. Diagnóstico forense dentro del TUI
         run_tui(lambda: render_pdf(final_outdir))
+
+    except LicenseError as exc:
+        _render_license_lockscreen(exc.code)
 
     except SystemExit:
         raise  # Allow intentional exits (e.g., license lockscreen) to propagate.

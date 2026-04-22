@@ -108,7 +108,7 @@ def display_activation_screen(
     Parameters
     ----------
     challenge_url : str
-        Full URL to encode in the QR code (https://invariant.systems/activate?c=...)
+        Full URL to encode in the QR code (https://invariant-api.onrender.com/api/v1/license/activate?c=...)
     boot_id : str
         16-char hex session ID for display (formatted as XXXX-XXXX)
     timeout_seconds : int
@@ -163,15 +163,23 @@ def display_activation_screen(
     return None
 
 
-def display_activation_success() -> None:
-    """Shows a success message after PIN verification."""
+def display_activation_success() -> bool:
+    """Shows a success message after PIN verification, then clears the screen.
+
+    Returns True to signal explicit success to the caller.
+    """
     print()
     print(f"  {_GRN}════════════════════════════════════════════════════════════{_RST}")
     print(f"  {_GRN} [+] LICENCIA ACTIVADA EXITOSAMENTE{_RST}")
     print(f"  {_GRN}     La máquina ha sido vinculada a su suscripción.{_RST}")
     print(f"  {_GRN}════════════════════════════════════════════════════════════{_RST}")
     print()
+    sys.stdout.flush()
     time.sleep(2)
+    # Clear screen to hand over a clean slate to the Rich TUI
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
+    return True
 
 
 def display_activation_failure(reason: str) -> None:

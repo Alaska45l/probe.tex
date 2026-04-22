@@ -221,7 +221,8 @@ mkdir -p \
     "${ISO_ROOT}/airootfs/root/.cache/Tectonic" \
     "${ISO_ROOT}/efiboot/loader/entries" \
     "${ISO_ROOT}/syslinux" \
-    "${ISO_ROOT}/airootfs/etc"
+    "${ISO_ROOT}/airootfs/etc" \
+    "${ISO_ROOT}/airootfs/mnt/invariant_data"
 
 # Passwordless root — sulogin >= 2.37 / PAM-compatible shadow format.
 printf 'root::0:0:99999:7:::\n' > "${ISO_ROOT}/airootfs/etc/shadow"
@@ -340,6 +341,7 @@ pciutils
 usbutils
 smartmontools
 nvme-cli
+exfatprogs
 lm_sensors
 cpupower
 tectonic
@@ -401,6 +403,20 @@ _run_diagnostic() {
     cd /root/probe.tex || { echo -e "${RED}[✗] No se encontró /root/probe.tex${RST}"; return 1; }
 
     rm -f "${outdir}/reporte_generado.pdf" "${outdir}/reporte_generado.tex"
+
+    # --- FIX: Synchronous mount of INVARIANT data partition ---
+    # The USB block devices are fully settled by the time the user
+    # interacts with the menu. Mount synchronously here to guarantee
+    # bootstrap.sig / license.sig are visible to the Python verifier.
+    mkdir -p /mnt/invariant_data
+    if ! mountpoint -q /mnt/invariant_data; then
+        echo -e "\e[1;33m[*]\e[0m Montando partición de datos (INVARIANT)..."
+        if ! mount -t exfat -L INVARIANT /mnt/invariant_data 2> /tmp/mount_err.log; then
+            echo -e "\e[1;31m[!]\e[0m ERROR CRÍTICO: No se pudo montar la partición INVARIANT."
+            cat /tmp/mount_err.log
+            return 1
+        fi
+    fi
 
     # Ejecuta Python con captura determinista de stderr.
     # Usa procesos sustituidos + wait para garantizar flush completo
@@ -530,7 +546,7 @@ chmod +x "${ISO_ROOT}/airootfs/root/launcher.sh"
 cat > "${ISO_ROOT}/airootfs/etc/systemd/system/invariant-probe.service" << 'SERVICE'
 [Unit]
 Description=INVARIANT Ring-0 Boot Menu
-Documentation=https://invariant.systems/probe-tex
+Documentation=https://invariant-web.alaska45l.workers.dev/
 After=multi-user.target
 Conflicts=getty@tty1.service
 ConditionPathExists=/root/launcher.sh

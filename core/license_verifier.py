@@ -101,7 +101,7 @@ _LICENSE_DIR:  Final[Path] = Path("/mnt/invariant_data")
 _LICENSE_MAX_BYTES: Final[int] = 8_192  # 8 KiB
 
 # Air-Gap Bridge: activation URL base
-_ACTIVATION_URL_BASE: Final[str] = "https://invariant.systems/api/v1/license/activate"
+_ACTIVATION_URL_BASE: Final[str] = "https://invariant-api.onrender.com/api/v1/license/activate"
 
 # RTC ioctl — RTC_RD_TIME = _IOR('p', 0x09, struct rtc_time)
 # x86_64: sizeof(struct rtc_time) = 9 × sizeof(int) = 36 bytes.
