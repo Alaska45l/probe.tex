@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import platform
+import sys
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -286,53 +287,108 @@ def _compose(state: TuiState) -> Layout:
 
 def run_tui(target_func: Callable[[], None]) -> None:
     global _ACTIVE_STATE
-    console    = Console()
-    state      = TuiState()
+
+    # FIX: Aggressive instrumentation to trace TUI initialization
+    sys.stderr.write("[TUI-DEBUG] run_tui() entered\n")
+    sys.stderr.flush()
+
+    # FIX: Force terminal detection. On a Linux TTY after input(),
+    # auto-detection can fail or hang querying capabilities.
+    console = Console(force_terminal=True)
+    sys.stderr.write("[TUI-DEBUG] Console initialized (force_terminal=True)\n")
+    sys.stderr.flush()
+
+    state = TuiState()
     _ACTIVE_STATE = state
-    
-    state.start()  # <--- INYECTA ESTA LÍNEA AQUÍ
-    
+    state.start()
+    sys.stderr.write("[TUI-DEBUG] TuiState started\n")
+    sys.stderr.flush()
+
     done_event = Event()
     FPS: Final = 15
     ASSUMED_S  = 45.0
 
     def _worker() -> None:
+        sys.stderr.write("[TUI-DEBUG] _worker thread started\n")
+        sys.stderr.flush()
         state.update(phase=Phase.RUNNING, log="Mounting sysfs namespace...")
         try:
             target_func()
             state.update(phase=Phase.DONE, log="Extraction complete. Contract sealed.", pct=100.0)
+            sys.stderr.write("[TUI-DEBUG] target_func() completed successfully\n")
+            sys.stderr.flush()
         except Exception as exc:
+            sys.stderr.write(f"[TUI-DEBUG] _worker exception: {type(exc).__name__}: {exc}\n")
+            sys.stderr.flush()
             state.update(phase=Phase.ERROR, log=f"FAULT: {exc}")
             raise
         finally:
+            sys.stderr.write("[TUI-DEBUG] _worker setting done_event\n")
+            sys.stderr.flush()
             done_event.set()
 
     with ThreadPoolExecutor(max_workers=1) as pool:
+        sys.stderr.write("[TUI-DEBUG] ThreadPoolExecutor created\n")
+        sys.stderr.flush()
         future: Future[None] = pool.submit(_worker)
+        sys.stderr.write("[TUI-DEBUG] _worker submitted to pool\n")
+        sys.stderr.flush()
 
-        with Live(
-            _compose(state.snapshot()),
-            console=console,
-            screen=True,
-            refresh_per_second=10,
-            transient=False,
-        ) as live:
-            start_t = time.monotonic()
+        # FIX: Clear screen manually before Rich takes over.
+        # We do NOT use Live(screen=True) because the Linux TTY alternate
+        # screen buffer is unreliable and can hang after input() + ANSI clears.
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
+        sys.stderr.write("[TUI-DEBUG] Screen cleared manually\n")
+        sys.stderr.flush()
 
-            while not done_event.is_set():
-                elapsed = time.monotonic() - start_t
-                pct     = min(99.0, (elapsed / ASSUMED_S) * 100)
+        sys.stderr.write("[TUI-DEBUG] About to enter Live context...\n")
+        sys.stderr.flush()
 
-                state.update(pct=pct)
+        try:
+            with Live(
+                _compose(state.snapshot()),
+                console=console,
+                # FIX: screen=False — Linux TTY alternate screen buffer can
+                # cause hangs after input() and manual ANSI clears.
+                screen=False,
+                refresh_per_second=10,
+                transient=False,
+            ) as live:
+                sys.stderr.write("[TUI-DEBUG] Live context entered successfully\n")
+                sys.stderr.flush()
+                start_t = time.monotonic()
+
+                frame = 0
+                while not done_event.is_set():
+                    frame += 1
+                    elapsed = time.monotonic() - start_t
+                    pct     = min(99.0, (elapsed / ASSUMED_S) * 100)
+
+                    state.update(pct=pct)
+                    live.update(_compose(state.snapshot()), refresh=True)
+                    time.sleep(1 / FPS)
+
+                sys.stderr.write(f"[TUI-DEBUG] Worker done after {frame} frames\n")
+                sys.stderr.flush()
                 live.update(_compose(state.snapshot()), refresh=True)
-                time.sleep(1 / FPS)
+                time.sleep(0.5)
+        except Exception as exc:
+            sys.stderr.write(f"[TUI-DEBUG] Live context exception: {type(exc).__name__}: {exc}\n")
+            sys.stderr.flush()
+            raise
 
-            live.update(_compose(state.snapshot()), refresh=True)
-            time.sleep(0.5)
+    sys.stderr.write("[TUI-DEBUG] Exited ThreadPoolExecutor context\n")
+    sys.stderr.flush()
 
     exc = future.exception()
     if exc is not None:
+        sys.stderr.write(f"[TUI-DEBUG] Worker raised exception: {type(exc).__name__}: {exc}\n")
+        sys.stderr.flush()
         raise RuntimeError(f"probe.tex fault: {exc}") from exc
+
+    sys.stderr.write("[TUI-DEBUG] run_tui() returning normally\n")
+    sys.stderr.flush()
 
 
 if __name__ == "__main__":

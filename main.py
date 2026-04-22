@@ -527,6 +527,11 @@ if __name__ == "__main__":
         # 3. Flush any pending stdout bytes before Rich takes over the terminal
         sys.stdout.flush()
 
+        # FIX: Allow the terminal to settle after the activation flow's input()
+        # and ANSI clear sequence before Rich initializes. This prevents TTY
+        # state races on Linux consoles.
+        time.sleep(0.5)
+
         # 4. Diagnóstico forense dentro del TUI
         run_tui(lambda: render_pdf(final_outdir))
 

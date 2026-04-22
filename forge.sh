@@ -341,6 +341,7 @@ pciutils
 usbutils
 smartmontools
 nvme-cli
+tpm2-tools
 exfatprogs
 lm_sensors
 cpupower
