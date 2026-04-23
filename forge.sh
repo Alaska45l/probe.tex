@@ -368,6 +368,12 @@ cat > "${ISO_ROOT}/airootfs/root/launcher.sh" << 'LAUNCHER'
 # INVARIANT v2 — Brutalist Corporate Design System
 # Standard Linux TTY compatible (degrades gracefully to 16/256-color)
 
+# If called with --run-diagnostic, skip the menu and run the diagnostic directly.
+if [[ "$1" == "--run-diagnostic" ]]; then
+    _run_diagnostic
+    exit 0
+fi
+
 trap '' SIGINT SIGTERM
 
 # ── INVARIANT v2 Color Tokens ────────────────────────────────────────────────
@@ -681,7 +687,7 @@ if [ "$(tty)" = "/dev/tty1" ]; then
     export TERM=linux
     export PYTHONUNBUFFERED=1
     export PYTHONIOENCODING=utf-8
-    exec /root/launcher.sh
+    exec python /root/probe.tex/menu.py
 fi
 BASHPROFILE
 chmod 644 "${ISO_ROOT}/airootfs/root/.bash_profile"

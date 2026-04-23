@@ -219,6 +219,33 @@ def _resolve_outdir(args_outdir: str | None) -> Path:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+#  PROFILE LOADER (Zero-Trust Identity Pipeline)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _load_profile() -> dict[str, str]:
+    """Load identity profile from USB partition. Returns safe defaults on failure."""
+    profile_path = Path("/mnt/invariant_data/profile.json")
+    try:
+        raw = profile_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return {
+                "client_name": data.get("client_name", "N/A"),
+                "tech_name":   data.get("tech_name",   "N/A"),
+                "email":       data.get("email",       ""),
+                "phone":       data.get("phone",       ""),
+            }
+    except Exception as exc:
+        _log.warning("Failed to load profile.json: %s", exc)
+    return {
+        "client_name": "N/A",
+        "tech_name":   "N/A",
+        "email":       "",
+        "phone":       "",
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  RENDERIZACIÓN DE REPORTE FORENSE
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -312,17 +339,19 @@ def render_pdf(outdir: Path | None = None) -> None:
     )
 
     runtime_log("Assembling Ring-0 data contract...")
+
+    profile = _load_profile()
     report = DiagnosticReport(
         metadata=ReportMetadata(
             report_id          = "INV-2026-001",
-            cliente_nombre     = "Taller Local Demo",
-            cliente_email      = "contacto@cliente.com",
-            cliente_telefono   = "+54 223 000-0000",
+            cliente_nombre     = profile["client_name"],
+            cliente_email      = profile["email"],
+            cliente_telefono   = profile["phone"],
             device_brand       = "ASUS",
             device_model       = "Vivobook E1504FA",
             serial_number      = serial_number,
             taller_nombre      = "Invariant Systems",
-            tecnico_nombre     = "Admin",
+            tecnico_nombre     = profile["tech_name"],
             version            = "1.0.0",
             kernel_version     = kernel_version,
             fecha_reporte      = fecha_actual,
