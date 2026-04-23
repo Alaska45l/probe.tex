@@ -636,7 +636,12 @@ def _verify_signature(
 #  LAYER 6 — Payload Parser
 # ════════════════════════════════════════════════════════════════════════════
 
-_VALID_PLANS: Final[frozenset[str]] = frozenset({"subscription"})
+_VALID_PLANS: Final[frozenset[str]] = frozenset({
+    "subscription",
+    "trial",
+    "trial_pending",
+    "admin_override",
+})
 
 
 def _parse_payload(json_bytes: bytes) -> LicensePayload:
@@ -835,7 +840,7 @@ def _parse_bootstrap_payload(json_bytes: bytes) -> BootstrapPayload:
     if not (isinstance(subscription_id, str) and len(subscription_id) > 0):
         raise LicenseError("BOOTSTRAP_SUBSCRIPTION_ID_INVALID")
 
-    if not (isinstance(plan, str) and plan in {"subscription", "trial"}):
+    if not (isinstance(plan, str) and plan in {"subscription", "trial", "trial_pending", "admin_override"}):
         raise LicenseError(f"BOOTSTRAP_PLAN_INVALID:{plan!r}")
 
     if not (isinstance(issued_at, int) and issued_at > 0):

@@ -225,7 +225,10 @@ mkdir -p \
     "${ISO_ROOT}/airootfs/mnt/invariant_data"
 
 # Passwordless root — sulogin >= 2.37 / PAM-compatible shadow format.
-printf 'root::0:0:99999:7:::\n' > "${ISO_ROOT}/airootfs/etc/shadow"
+# lastchg=19000 (≈2022-01-01) prevents pam_unix.so from forcing a
+# password reset on first login.  A value of 0 is the sentinel that
+# triggers the "You are required to change your password" prompt.
+printf 'root::19000:0:99999:7:::\n' > "${ISO_ROOT}/airootfs/etc/shadow"
 
 # ════════════════════════════════════════════════════════════
 # SECTION 2b — Locale & UTF-8 runtime guarantee (FIX-RING-0)
