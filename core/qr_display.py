@@ -26,14 +26,14 @@ import sys
 import time
 from typing import Final
 
-# ── ANSI escape codes ─────────────────────────────────────────────────────────
-_RED: Final[str] = "\033[1;31m"
-_WHT: Final[str] = "\033[1;37m"
-_DIM: Final[str] = "\033[0;90m"
-_YLW: Final[str] = "\033[1;33m"
-_GRN: Final[str] = "\033[1;32m"
+# ── INVARIANT v2 Brutalist ANSI (24-bit True Color) ──────────────────────────
+_PRI: Final[str] = "\033[38;2;229;229;229m"   # primary   #E5E5E5
+_SLT: Final[str] = "\033[38;2;115;115;115m"   # slate     #737373
+_RED: Final[str] = "\033[38;2;255;68;68m"     # redtex    #FF4444
+_NTC: Final[str] = "\033[38;2;160;160;160m"   # notice    #A0A0A0
+_BRD: Final[str] = "\033[38;2;38;38;38m"      # border    #262626
+_LGT: Final[str] = "\033[48;2;20;20;20m"      # light bg  #141414
 _RST: Final[str] = "\033[0m"
-_BOLD: Final[str] = "\033[1m"
 
 
 def _render_qr_to_terminal(data: str) -> str:
@@ -128,38 +128,43 @@ def display_activation_screen(
 
     qr_art = _render_qr_to_terminal(challenge_url)
 
-    print(f"{_WHT}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{_RST}")
-    print(f"{_WHT} I N V A R I A N T // ACTIVACIÓN DE LICENCIA{_RST}")
-    print(f"{_RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{_RST}")
+    print()
+    print(f"{_BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓{_RST}")
+    print(f"{_BRD}▓{_LGT}                                                               {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓{_LGT}  {_PRI}I N V A R I A N T{_LGT}  {_SLT}//{_LGT}  {_PRI}A C T I V A C I Ó N   D E   L I C E N C I A{_LGT}  {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓{_LGT}                                                               {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓{_RST}")
     print()
     print(qr_art)
     print()
-    print(f"{_RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{_RST}")
-    print(f"  {_WHT}Escanee el código QR con su celular.{_RST}")
-    print(f"  {_DIM}Luego ingrese el PIN de 6 dígitos que aparece en pantalla.{_RST}")
+    print(f"{_BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓{_RST}")
+    print(f"  {_PRI}Escanee el código QR con su celular.{_RST}")
+    print(f"  {_NTC}Luego ingrese el PIN de 6 dígitos que aparece en pantalla.{_RST}")
     print()
-    print(f"  {_DIM}ID de sesión :{_RST} {_WHT}{session_display}{_RST}")
-    print(f"  {_DIM}Válido por   :{_RST} {_WHT}{timeout_seconds // 60} minutos{_RST}")
-    print(f"{_RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{_RST}")
+    print(f"  {_SLT}ID de sesión {_BRD}│{_RST} {_PRI}{session_display}{_RST}")
+    print(f"  {_SLT}Válido por   {_BRD}│{_RST} {_PRI}{timeout_seconds // 60} minutos{_RST}")
+    print(f"{_BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓{_RST}")
     print()
     sys.stdout.flush()
 
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
-        remaining = f" ({max_attempts - attempt} intentos restantes)" if attempt > 1 else ""
+        remaining = f" ({max_attempts - attempt} restantes)" if attempt > 1 else ""
         try:
-            pin = input(f"  {_RED}PIN [{attempt}/{max_attempts}]{_RST}{remaining}: ").strip()
+            print(f"  {_PRI}[INVARIANT_TTY]> {_RED}", end="")
+            pin = input(f"PIN [{attempt}/{max_attempts}]{remaining}: ").strip()
+            print(f"{_RST}", end="")
         except (EOFError, KeyboardInterrupt):
-            print(f"\n  {_RED}[✗] Entrada cancelada.{_RST}")
+            print(f"\n  {_RED}[ ▓ ] Entrada cancelada.{_RST}")
             return None
 
         if len(pin) == 6 and pin.isdigit():
             return pin
 
         if attempt < max_attempts:
-            print(f"  {_YLW}[!] El PIN debe ser exactamente 6 dígitos.{_RST}")
+            print(f"  {_NTC}[ ▓ ] El PIN debe ser exactamente 6 dígitos.{_RST}")
 
-    print(f"\n  {_RED}[✗] Máximo de intentos alcanzado.{_RST}")
+    print(f"\n  {_RED}[ ▓ ] Máximo de intentos alcanzado.{_RST}")
     return None
 
 
@@ -169,10 +174,12 @@ def display_activation_success() -> bool:
     Returns True to signal explicit success to the caller.
     """
     print()
-    print(f"  {_GRN}════════════════════════════════════════════════════════════{_RST}")
-    print(f"  {_GRN} [+] LICENCIA ACTIVADA EXITOSAMENTE{_RST}")
-    print(f"  {_GRN}     La máquina ha sido vinculada a su suscripción.{_RST}")
-    print(f"  {_GRN}════════════════════════════════════════════════════════════{_RST}")
+    print(f"{_BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓{_RST}")
+    print(f"{_BRD}▓{_LGT}                                                               {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓{_LGT}  {_PRI}[ ▓ ]  L I C E N C I A   A C T I V A D A   E X I T O S A M E N T E{_LGT}  {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓{_LGT}       {_NTC}La máquina ha sido vinculada a su suscripción.{_LGT}              {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓{_LGT}                                                               {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓{_RST}")
     print()
     sys.stdout.flush()
     time.sleep(2)
@@ -185,9 +192,11 @@ def display_activation_success() -> bool:
 def display_activation_failure(reason: str) -> None:
     """Shows a failure message with reason."""
     print()
-    print(f"  {_RED}════════════════════════════════════════════════════════════{_RST}")
-    print(f"  {_RED} [✗] ACTIVACIÓN FALLIDA{_RST}")
-    print(f"  {_RED}     {reason}{_RST}")
-    print(f"  {_RED}════════════════════════════════════════════════════════════{_RST}")
+    print(f"{_BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓{_RST}")
+    print(f"{_BRD}▓{_LGT}                                                               {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓{_LGT}  {_RED}[ ▓ ]  A C T I V A C I Ó N   F A L L I D A{_LGT}                     {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓{_LGT}       {_NTC}{reason}{_LGT}                                        {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓{_LGT}                                                               {_RST}{_BRD}▓{_RST}")
+    print(f"{_BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓{_RST}")
     print()
     time.sleep(3)

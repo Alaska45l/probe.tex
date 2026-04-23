@@ -343,7 +343,6 @@ smartmontools
 nvme-cli
 tpm2-tools
 exfatprogs
-kmscon
 lm_sensors
 cpupower
 tectonic
@@ -363,96 +362,102 @@ PACKAGES
 # ════════════════════════════════════════════════════════════
 cat > "${ISO_ROOT}/airootfs/root/launcher.sh" << 'LAUNCHER'
 #!/usr/bin/env bash
+# INVARIANT v2 — Brutalist Corporate Design System
+# Standard Linux TTY compatible (degrades gracefully to 16/256-color)
+
 trap '' SIGINT SIGTERM
 
-RED='\033[1;31m'; WHT='\033[1;37m'; GRN='\033[1;32m'
-YLW='\033[1;33m'; DIM='\033[0;90m'; RST='\033[0m'
+# ── INVARIANT v2 Color Tokens ────────────────────────────────────────────────
+PRI='\e[38;2;229;229;229m'   # primary   #E5E5E5
+SLT='\e[38;2;115;115;115m'   # slate     #737373
+RED='\e[38;2;255;68;68m'     # redtex    #FF4444
+NTC='\e[38;2;160;160;160m'   # notice    #A0A0A0
+BRD='\e[38;2;38;38;38m'      # border    #262626
+LGT='\e[48;2;20;20;20m'      # light bg  #141414
+RST='\e[0m'
 
 _header() {
     clear
-    echo -e "${WHT}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
-    echo -e "${WHT} I N V A R I A N T // probe.tex HARDWARE FORENSIC OS${RST}"
-    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
-    echo -e "${DIM} MODULE   :${RST} ${WHT}probe.tex v1.0.0${RST}"
-    echo -e "${DIM} KERNEL   :${RST} ${WHT}$(uname -r)${RST}"
-    echo -e "${DIM} UPTIME   :${RST} ${WHT}$(cut -d. -f1 /proc/uptime)s${RST}"
-    echo -e "${DIM} MEMORY   :${RST} ${WHT}$(awk '/MemTotal/{printf "%.0f MB", $2/1024}' /proc/meminfo)${RST}"
-    echo -e "${WHT}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
+    echo ""
+    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+    echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
+    echo -e "${BRD}▓${LGT}  ${PRI}I N V A R I A N T${LGT}  ${SLT}//${LGT}  ${PRI}S Y S T E M   D I A G N O S T I C${LGT}      ${RST}${BRD}▓${RST}"
+    echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
+    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+    echo ""
+    echo -e "  ${SLT}MODULE ${BRD}│${RST} ${PRI}probe.tex v1.0.0${RST}"
+    echo -e "  ${SLT}KERNEL ${BRD}│${RST} ${PRI}$(uname -r)${RST}"
+    echo -e "  ${SLT}UPTIME ${BRD}│${RST} ${PRI}$(cut -d. -f1 /proc/uptime)s${RST}"
+    echo -e "  ${SLT}MEMORY ${BRD}│${RST} ${PRI}$(awk '/MemTotal/{printf "%.0f MB", $2/1024}' /proc/meminfo)${RST}"
     echo ""
 }
 
 _menu() {
     _header
-    echo -e "  ${RED}[ 1 ]${RST} ${WHT}INIT DIAGNOSTIC${RST}    ${DIM}Ejecutar probe.tex y generar reporte PDF${RST}"
-    echo -e "  ${RED}[ 4 ]${RST} ${WHT}FORCE SHUTDOWN${RST}     ${DIM}Apagado forzado del sistema a nivel kernel${RST}"
+    echo -e "${BRD}┌─────────────────────────────────────────────────────────────┐${RST}"
+    echo -e "${BRD}│${RST}  ${RED}[ ▓ ]${RST} ${PRI}INIT DIAGNOSTIC${RST}    ${SLT}Ejecutar probe.tex y generar reporte PDF${RST}  ${BRD}│${RST}"
+    echo -e "${BRD}│${RST}                                                             ${BRD}│${RST}"
+    echo -e "${BRD}│${RST}  ${RED}[ ▓ ]${RST} ${PRI}FORCE SHUTDOWN${RST}     ${SLT}Apagado forzado del sistema a nivel kernel${RST} ${BRD}│${RST}"
+    echo -e "${BRD}└─────────────────────────────────────────────────────────────┘${RST}"
     echo ""
+    echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
 }
 
 _shutdown() {
-    echo -e "\n${DIM}  [!] Forzando apagado del kernel...${RST}"
+    echo ""
+    echo -e "  ${RED}[ ▓ ] Forzando apagado del kernel...${RST}"
     sync
     poweroff -f
 }
 
 _run_diagnostic() {
     clear
-    echo -e "${RED}════════════════════════════════════════════════════════════${RST}"
-    echo -e "${WHT} INVARIANT // Iniciando secuencia de diagnóstico forense...${RST}"
-    echo -e "${RED}════════════════════════════════════════════════════════════${RST}"
+    echo ""
+    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+    echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
+    echo -e "${BRD}▓${LGT}  ${PRI}I N V A R I A N T${LGT}  ${SLT}//${LGT}  ${PRI}S E C U E N C I A   D E   D I A G N Ó S T I C O${LGT}  ${RST}${BRD}▓${RST}"
+    echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
+    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
     echo ""
 
     local outdir="/tmp"
-    cd /root/probe.tex || { echo -e "${RED}[✗] No se encontró /root/probe.tex${RST}"; return 1; }
+    cd /root/probe.tex || { echo -e "  ${RED}[ ▓ ] ERROR: No se encontró /root/probe.tex${RST}"; return 1; }
 
     rm -f "${outdir}/reporte_generado.pdf" "${outdir}/reporte_generado.tex"
 
     # --- FIX: Synchronous mount of INVARIANT data partition ---
-    # The USB block devices are fully settled by the time the user
-    # interacts with the menu. Mount synchronously here to guarantee
-    # bootstrap.sig / license.sig are visible to the Python verifier.
     mkdir -p /mnt/invariant_data
     if ! mountpoint -q /mnt/invariant_data; then
-        echo -e "\e[1;33m[*]\e[0m Reparando y montando partición de datos (INVARIANT)..."
-        # Aggressive auto-repair (-y) maximizes probability of clearing the
-        # exFAT volume dirty bit before the first mount.
+        echo -e "  ${NTC}[ ▓ ] Reparando y montando partición de datos (INVARIANT)...${RST}"
         fsck.exfat -y /dev/disk/by-label/INVARIANT 2>/dev/null || true
         if ! mount -t exfat -L INVARIANT /mnt/invariant_data 2> /tmp/mount_err.log; then
-            echo -e "\e[1;31m[!]\e[0m ERROR CRÍTICO: No se pudo montar la partición INVARIANT."
+            echo -e "  ${RED}[ ▓ ] ERROR CRÍTICO: No se pudo montar la partición INVARIANT.${RST}"
             cat /tmp/mount_err.log
             return 1
         fi
     fi
-    # Real-world write test: verify the kernel actually granted RW.
     if ! touch /mnt/invariant_data/.rw_probe 2>/dev/null; then
-        echo -e "\e[1;31m[!]\e[0m ERROR CRÍTICO: Partición INVARIANT montada en modo SOLO LECTURA."
+        echo -e "  ${RED}[ ▓ ] ERROR CRÍTICO: Partición INVARIANT montada en modo SOLO LECTURA.${RST}"
         return 1
     fi
     rm -f /mnt/invariant_data/.rw_probe
 
-    # Ejecuta Python con captura determinista de stderr.
-    # Usa procesos sustituidos + wait para garantizar flush completo
-    # antes de que el shell continúe (evita race condition en tee).
     python main.py --outdir "${outdir}" > >(cat) 2> >(tee -a /tmp/invariant_error.log >&2)
     local rc=$?
-    wait  # Espera a que los subshells de tee terminen de flushear
+    wait
 
     if [[ ${rc} -eq 0 ]]; then
-        # Auto-save: verify RW state, copy report, clean unmount.
         local inv_dev inv_mnt="/mnt/invariant_data"
         inv_dev="$(blkid -L INVARIANT 2>/dev/null || true)"
         if [[ -n "${inv_dev}" && -b "${inv_dev}" ]]; then
             mkdir -p "${inv_mnt}"
 
-            # Phase 1: Ensure the filesystem is actually writable.
-            # mount(8) may return 0 even when the kernel silently forces RO
-            # on a dirty exFAT volume. We trust a real write probe, not mount.
             local _actually_rw=0
             if mountpoint -q "${inv_mnt}"; then
                 if touch "${inv_mnt}/.rw_probe" 2>/dev/null; then
                     rm -f "${inv_mnt}/.rw_probe"
                     _actually_rw=1
                 else
-                    # Mounted but RO — dirty-bit trap. Unmount, repair, remount.
                     umount "${inv_mnt}" 2>/dev/null || true
                     fsck.exfat -y "${inv_dev}" 2>/dev/null || true
                     if mount -t exfat "${inv_dev}" "${inv_mnt}" 2>/dev/null; then
@@ -460,118 +465,136 @@ _run_diagnostic() {
                     fi
                 fi
             else
-                # Not mounted at all — mount fresh.
                 if mount -t exfat "${inv_dev}" "${inv_mnt}" 2>/dev/null; then
                     touch "${inv_mnt}/.rw_probe" 2>/dev/null && rm -f "${inv_mnt}/.rw_probe" && _actually_rw=1
                 fi
             fi
 
-            # Phase 2: Copy PDF only if we confirmed real writability.
             if [[ ${_actually_rw} -eq 1 ]]; then
                 local ts
                 ts="$(date +%Y%m%d_%H%M%S)"
                 if cp "${outdir}/reporte_generado.pdf" \
                       "${inv_mnt}/reporte_${ts}.pdf" 2>/dev/null; then
                     sync
-                    echo -e "${GRN}     [+] Auto-saved to INVARIANT partition${RST}"
+                    echo -e "  ${PRI}[ ▓ ] Auto-saved to INVARIANT partition${RST}"
                 else
-                    echo -e "${YLW}     [!] Auto-save copy failed (filesystem full?)${RST}"
+                    echo -e "  ${NTC}[ ▓ ] Auto-save copy failed (filesystem full?)${RST}"
                 fi
             else
-                echo -e "${YLW}     [!] INVARIANT partition is read-only (dirty bit).${RST}"
-                echo -e "${YLW}         PDF remains available at: ${outdir}/reporte_generado.pdf${RST}"
+                echo -e "  ${RED}[ ▓ ] INVARIANT partition is read-only (dirty bit).${RST}"
+                echo -e "  ${NTC}      PDF remains available at: ${outdir}/reporte_generado.pdf${RST}"
             fi
 
-            # Phase 3: Clean unmount to clear the exFAT dirty bit.
             sync
             umount "${inv_mnt}" 2>/dev/null || true
         fi
         echo ""
-        echo -e "${GRN}════════════════════════════════════════════════════════════${RST}"
-        echo -e "${GRN} [+] DIAGNÓSTICO COMPLETADO${RST}"
-        echo -e "${GRN}     Reporte disponible en: ${outdir}/reporte_generado.pdf${RST}"
-        echo -e "${GRN}════════════════════════════════════════════════════════════${RST}"
+        echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+        echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
+        echo -e "${BRD}▓${LGT}  ${PRI}[ ▓ ]  D I A G N Ó S T I C O   C O M P L E T A D O${LGT}           ${RST}${BRD}▓${RST}"
+        echo -e "${BRD}▓${LGT}       ${NTC}Reporte disponible en: ${PRI}${outdir}/reporte_generado.pdf${LGT}       ${RST}${BRD}▓${RST}"
+        echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
+        echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
     else
         echo ""
-        echo -e "${RED}[✗] El diagnóstico terminó con errores.${RST}"
+        echo -e "  ${RED}[ ▓ ] El diagnóstico terminó con errores.${RST}"
         if [[ -s /tmp/invariant_error.log ]]; then
-            echo -e "${RED}--- Últimas líneas del log de error ---${RST}"
+            echo -e "  ${RED}─── Últimas líneas del log de error ───${RST}"
             tail -n 20 /tmp/invariant_error.log
-            echo -e "${RED}---------------------------------------${RST}"
+            echo -e "  ${RED}────────────────────────────────────────${RST}"
         fi
     fi
 
     echo ""
-    read -rp "  Presione ENTER para volver al menú..." _
+    echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
+    read -rp "Presione ENTER para volver al menú..." _
+    echo -e "${RST}"
 }
 
 _extract_to_usb() {
     clear
-    echo -e "${YLW}════════════════════════════════════════════════════════════${RST}"
-    echo -e "${WHT} INVARIANT // Módulo de Exfiltración de Reporte${RST}"
-    echo -e "${YLW}════════════════════════════════════════════════════════════${RST}"
+    echo ""
+    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+    echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
+    echo -e "${BRD}▓${LGT}  ${PRI}I N V A R I A N T${LGT}  ${SLT}//${LGT}  ${PRI}M Ó D U L O   D E   E X F I L T R A C I Ó N${LGT}  ${RST}${BRD}▓${RST}"
+    echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
+    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
     echo ""
 
     local pdf_src="/tmp/reporte_generado.pdf"
 
     if [[ ! -f "${pdf_src}" ]]; then
-        echo -e "${RED}  [✗] No se encontró ${pdf_src}${RST}"
-        echo -e "       Ejecute primero la Directiva [ 1 ] para generar el reporte."
+        echo -e "  ${RED}[ ▓ ] No se encontró ${pdf_src}${RST}"
+        echo -e "       ${NTC}Ejecute primero la Directiva [ ▓ ] para generar el reporte.${RST}"
         echo ""
-        read -rp "  Presione ENTER para volver..." _
+        echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
+        read -rp "Presione ENTER para volver..." _
+        echo -e "${RST}"
         return
     fi
 
-    echo -e "  ${YLW}[!]${RST} Inserte el pendrive USB (FAT32 o exFAT) y presione ENTER."
-    read -rp "      [ENTER para escanear dispositivos] " _
+    echo -e "  ${NTC}[ ▓ ] Inserte el pendrive USB (FAT32 o exFAT) y presione ENTER.${RST}"
+    echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
+    read -rp "[ENTER para escanear dispositivos] " _
+    echo -e "${RST}"
 
     echo ""
-    echo -e "  ${WHT}Dispositivos de bloque detectados:${RST}"
+    echo -e "  ${PRI}Dispositivos de bloque detectados:${RST}"
     echo ""
     lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT | grep -v "loop" | sed 's/^/    /'
     echo ""
 
-    read -rp "  Ingrese el nodo del USB (ej: sdb1): " usb_node
+    echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
+    read -rp "Ingrese el nodo del USB (ej: sdb1): " usb_node
+    echo -e "${RST}"
     local usb_dev="/dev/${usb_node}"
 
     if [[ ! -b "${usb_dev}" ]]; then
-        echo -e "${RED}  [✗] Dispositivo '${usb_dev}' no encontrado.${RST}"
-        read -rp "  Presione ENTER para volver..." _
+        echo -e "  ${RED}[ ▓ ] Dispositivo '${usb_dev}' no encontrado.${RST}"
+        echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
+        read -rp "Presione ENTER para volver..." _
+        echo -e "${RST}"
         return
     fi
 
     local mnt="/mnt/usb_export"
     mkdir -p "${mnt}"
 
-    echo -e "  ${YLW}[*]${RST} Montando ${usb_dev} en ${mnt}..."
+    echo -e "  ${NTC}[ ▓ ] Montando ${usb_dev} en ${mnt}...${RST}"
     if mount "${usb_dev}" "${mnt}" 2>/dev/null; then
         local dest="${mnt}/reporte_generado_$(date +%Y%m%d_%H%M%S).pdf"
         cp "${pdf_src}" "${dest}"
         sync
         umount "${mnt}"
-        echo -e "${GRN}  [+] Reporte copiado exitosamente.${RST}"
-        echo -e "       Archivo: $(basename "${dest}")"
+        echo -e "  ${PRI}[ ▓ ] Reporte copiado exitosamente.${RST}"
+        echo -e "       ${NTC}Archivo: $(basename "${dest}")${RST}"
     else
-        echo -e "${RED}  [✗] Error al montar ${usb_dev}. ¿Formato compatible (FAT32/exFAT)?${RST}"
+        echo -e "  ${RED}[ ▓ ] Error al montar ${usb_dev}. ¿Formato compatible (FAT32/exFAT)?${RST}"
     fi
 
     echo ""
-    read -rp "  Presione ENTER para volver al menú..." _
+    echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
+    read -rp "Presione ENTER para volver al menú..." _
+    echo -e "${RST}"
 }
 
 while true; do
     _menu
-    read -rp "  Seleccione directiva [1-4]: " option
+    read -r option
+    echo -e "${RST}"
     case "${option}" in
         1) _run_diagnostic  ;;
         2) _extract_to_usb  ;;
         3)
            clear
-           echo -e "${YLW}════════════════════════════════════════════════════════════${RST}"
-           echo -e "${RED}  [!] WARNING: Root shell access is logged and recorded.${RST}"
-           echo -e "${YLW}════════════════════════════════════════════════════════════${RST}"
            echo ""
-           PS1="\[\033[1;31m\][ring-0] \W #\[\033[0m\] " \
+           echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+           echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
+           echo -e "${BRD}▓${LGT}  ${RED}W A R N I N G${LGT}  ${SLT}//${LGT}  ${NTC}Root shell access is logged and recorded.${LGT}         ${RST}${BRD}▓${RST}"
+           echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
+           echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+           echo ""
+           PS1="\[\e[38;2;255;68;68m\][ring-0] \W #\[\e[0m\] " \
                script -q /tmp/shell_session_$(date +%s).log -c bash
            ;;
         4) _shutdown        ;;
@@ -587,7 +610,7 @@ cat > "${ISO_ROOT}/airootfs/etc/systemd/system/invariant-probe.service" << 'SERV
 [Unit]
 Description=INVARIANT Ring-0 Boot Menu
 Documentation=https://invariant-web.alaska45l.workers.dev/
-After=multi-user.target kmscon@tty1.service
+After=multi-user.target
 ConditionPathExists=/root/launcher.sh
 # Prevent infinite restart loops on persistent faults.
 StartLimitIntervalSec=30s
@@ -621,16 +644,44 @@ Restart=no
 WantedBy=multi-user.target
 SERVICE
 
-# Static enablement — avoids systemctl inside the build chroot.
-ln -sf \
-    "/etc/systemd/system/invariant-probe.service" \
-    "${ISO_ROOT}/airootfs/etc/systemd/system/multi-user.target.wants/invariant-probe.service"
+# Default getty@tty1.service provides the standard Linux virtual terminal.
+# We use a drop-in to auto-login root, then /root/.bash_profile launches
+# launcher.sh.  invariant-probe.service is intentionally NOT enabled here
+# to avoid a TTY ownership conflict with getty.
 
-# kmscon provides DRM/KMS hardware-accelerated terminal on tty1.
-# invariant-probe.service runs launcher.sh on top of it.
-ln -sf \
-    "/usr/lib/systemd/system/kmscon@.service" \
-    "${ISO_ROOT}/airootfs/etc/systemd/system/multi-user.target.wants/kmscon@tty1.service"
+# ════════════════════════════════════════════════════════════
+# SECTION 8b — getty auto-login drop-in (FIX-GETTY-AUTOLOGIN)
+#
+# Restores the pre-kmscon behavior: root is automatically logged in on
+# tty1 so the technician never sees a login: prompt.
+# ════════════════════════════════════════════════════════════
+mkdir -p "${ISO_ROOT}/airootfs/etc/systemd/system/getty@tty1.service.d"
+
+cat > "${ISO_ROOT}/airootfs/etc/systemd/system/getty@tty1.service.d/autologin.conf" << 'AUTOLOGIN'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty -o '-p -f -- \\u' --noclear --autologin root %I $TERM
+AUTOLOGIN
+
+# ════════════════════════════════════════════════════════════
+# SECTION 8c — Root login shell hook
+#
+# When getty auto-logs root in on tty1, this profile execs launcher.sh
+# directly, preserving the hardened environment variables required by
+# the Python Unicode stack.
+# ════════════════════════════════════════════════════════════
+cat > "${ISO_ROOT}/airootfs/root/.bash_profile" << 'BASHPROFILE'
+# INVARIANT probe.tex — Ring-0 Boot Hook
+if [ "$(tty)" = "/dev/tty1" ]; then
+    export LANG=en_US.UTF-8
+    export LC_ALL=en_US.UTF-8
+    export TERM=linux
+    export PYTHONUNBUFFERED=1
+    export PYTHONIOENCODING=utf-8
+    exec /root/launcher.sh
+fi
+BASHPROFILE
+chmod 644 "${ISO_ROOT}/airootfs/root/.bash_profile"
 
 # ════════════════════════════════════════════════════════════
 # SECTION 9 — Silent boot suppression (FIX-15)

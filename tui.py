@@ -6,8 +6,8 @@ PILLAR 1: Delta-Update Architecture
 ───────────────────────────────────
 Static components (TargetTopology) are built once and cached.
 Only dynamic components (Header clock, LogStream, StatusBar) are
-re-instantiated per frame. Live(screen=True) leverages kmscon's
-DRM-backed alternate buffer for zero-flicker rendering.
+re-instantiated per frame. Live(screen=False) stays on the main
+buffer for standard Linux TTY compatibility after input() calls.
 """
 from __future__ import annotations
 
@@ -42,24 +42,32 @@ def runtime_log(msg: str) -> None:
     if _ACTIVE_STATE:
         _ACTIVE_STATE.update(log=msg)
 
-# ── Palette ───────────────────────────────────────────────────────────────────
+# ── INVARIANT v2 Palette ──────────────────────────────────────────────────────
+# Retro-futuristic Corporate Brutalism — 24-bit True Color
 
 class C:
-    WHITE:   Final[str] = "#FFFFFF"
-    GREY:    Final[str] = "#888888"
-    DIMGREY: Final[str] = "#333333"
-    ORANGE:  Final[str] = "#FF5000"
-    BLACK:   Final[str] = "#000000"
+    PRIMARY: Final[str] = "#E5E5E5"   # High-contrast text
+    SLATE:   Final[str] = "#737373"   # Secondary / inactive
+    REDTEX:  Final[str] = "#FF4444"   # Critical errors, active cursors
+    BORDER:  Final[str] = "#262626"   # Grid lines, separators
+    NOTICE:  Final[str] = "#A0A0A0"   # Informational text
+    LIGHT:   Final[str] = "#141414"   # Panel backgrounds
+    CANVAS:  Final[str] = "#0A0A0A"   # Deep void background
 
-    white   = Style(color=WHITE)
-    grey    = Style(color=GREY)
-    dimgrey = Style(color=DIMGREY)
-    accent  = Style(color=ORANGE, bold=True)
+    primary = Style(color=PRIMARY)
+    slate   = Style(color=SLATE)
+    redtex  = Style(color=REDTEX, bold=True)
+    border  = Style(color=BORDER)
+    notice  = Style(color=NOTICE)
+    light   = Style(color=LIGHT)
+    canvas  = Style(color=CANVAS)
 
 
 # ── Progress bar ───────────────────────────────────────────────────────────────
 
 class _FlatBar:
+    """Brutalist solid-block progress bar."""
+
     def __init__(self, percentage: float) -> None:
         self.percentage = percentage
 
@@ -67,9 +75,10 @@ class _FlatBar:
         width  = max(1, options.max_width)
         filled = int(width * self.percentage / 100)
         bar    = Text(no_wrap=True, overflow="crop")
-        style  = C.accent if self.percentage >= 100 else C.white
-        bar.append("━" * filled,           style=style)
-        bar.append("─" * (width - filled), style=C.dimgrey)
+        # Critical steps (>90%) use redtex; normal progress uses primary.
+        style  = C.redtex if self.percentage >= 90 else C.primary
+        bar.append("█" * filled,           style=style)
+        bar.append("░" * (width - filled), style=C.border)
         yield bar
 
     def __rich_measure__(self, console: Console, options: ConsoleOptions) -> Measurement:
@@ -157,14 +166,20 @@ class Header:
         grid.add_column(justify="right")
         
         t = self.state.mission_clock()
-        right_text = Text(f"T+ {t}  |  ", style=C.white)
-        right_text.append("probe.tex // Live OS Diagnostic", style=C.accent)
+        # Mission clock in redtex (critical status tag)
+        right_text = Text(f"T+ {t}  |  ", style=C.redtex)
+        right_text.append("probe.tex // Live OS Diagnostic", style=C.slate)
         
         grid.add_row(
-            Text("I N V A R I A N T", style=C.white),
+            Text("I N V A R I A N T", style=C.primary),
             right_text
         )
-        return Panel(grid, box=box.SIMPLE, style=C.dimgrey)
+        return Panel(
+            grid,
+            box=box.SIMPLE,
+            border_style=C.border,
+            style=C.canvas,
+        )
 
 
 class TargetTopology:
@@ -195,19 +210,20 @@ class TargetTopology:
         lines: list[Text] = []
         for i, (label, value) in enumerate(self._rows):
             if i == 4:
-                lines.append(Text("─" * 32, style=C.dimgrey))
+                lines.append(Text("─" * 32, style=C.border))
             row = Text()
-            row.append(f"{label:<8}", style=C.grey)
+            row.append(f"{label:<8}", style=C.slate)
             row.append("  ")
-            row.append(value, style=C.white)
+            row.append(value, style=C.primary)
             lines.append(row)
 
         return Panel(
             Group(*lines),
-            title="[ TARGET TOPOLOGY ]",
+            title="[bold #E5E5E5] TARGET TOPOLOGY [/bold #E5E5E5]",
             title_align="left",
-            border_style=C.dimgrey,
+            border_style=C.border,
             box=box.SQUARE,
+            style=C.canvas,
         )
 
 
@@ -223,9 +239,9 @@ class LogStream:
         for i, entry in enumerate(entries):
             active = (i == len(entries) - 1) and self.state.phase == Phase.RUNNING
             lines.append(
-                Text(f"● {entry}", style=C.white)
+                Text(f"▓ {entry}", style=C.primary)
                 if active
-                else Text(f"○ {entry}", style=C.dimgrey)
+                else Text(f"░ {entry}", style=C.slate)
             )
 
         while len(lines) < maxlen:
@@ -233,10 +249,11 @@ class LogStream:
 
         return Panel(
             Group(*lines),
-            title="[ RING-0 TELEMETRY ]",
+            title="[bold #E5E5E5] RING-0 TELEMETRY [/bold #E5E5E5]",
             title_align="left",
-            border_style=C.dimgrey,
+            border_style=C.border,
             box=box.SQUARE,
+            style=C.canvas,
         )
 
 
@@ -246,7 +263,7 @@ class StatusBar:
 
     def __rich__(self) -> Panel:
         progress = Progress(
-            TextColumn("[{task.percentage:>3.0f}%]", style=C.grey),
+            TextColumn("[{task.percentage:>3.0f}%]", style=C.slate),
             FlatBarColumn(),
             TimeElapsedColumn(),
             expand=True,
@@ -255,21 +272,22 @@ class StatusBar:
 
         if self.state.phase == Phase.DONE:
             progress.update(task_id, completed=100)
-            label = Text("PROBE HALTED // REPORT COMPILED", style=C.accent, justify="center")
+            label = Text("PROBE HALTED // REPORT COMPILED", style=C.redtex, justify="center")
         elif self.state.phase == Phase.ERROR:
             progress.update(task_id, completed=self.state.progress_pct)
-            label = Text("CRITICAL EXCEPTION", style=C.accent, justify="center")
+            label = Text("CRITICAL EXCEPTION", style=C.redtex, justify="center")
         elif self.state.phase == Phase.RUNNING:
             progress.update(task_id, completed=self.state.progress_pct)
-            label = Text("ACQUIRING KERNEL TELEMETRY", style=C.white, justify="center")
+            label = Text("ACQUIRING KERNEL TELEMETRY", style=C.primary, justify="center")
         else:
             progress.update(task_id, completed=0)
-            label = Text("SYS_IDLE", style=C.grey)
+            label = Text("SYS_IDLE", style=C.slate)
 
         return Panel(
             Columns([label, progress], expand=True),
-            border_style=C.dimgrey,
+            border_style=C.border,
             box=box.SQUARE,
+            style=C.canvas,
         )
 
 
@@ -319,11 +337,12 @@ def run_tui(target_func: Callable[[], None]) -> None:
     with ThreadPoolExecutor(max_workers=1) as pool:
         future: Future[None] = pool.submit(_worker)
 
-        # kmscon provides a DRM-backed terminal where screen=True works reliably.
+        # Standard Linux TTY — screen=False avoids alternate buffer hang
+        # after input() manipulates line discipline on raw VT.
         with Live(
             _compose(state.snapshot(), topology_layout),
             console=console,
-            screen=True,
+            screen=False,
             refresh_per_second=FPS,
             transient=False,
         ) as live:
