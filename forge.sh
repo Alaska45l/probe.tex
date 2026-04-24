@@ -194,19 +194,11 @@ $(grep -E '^[a-zA-Z_]+\(\)' "${HOOK_SOURCE}" | sed 's/^/  /' || printf '  (none)
 
 mkdir -p "${HOOK_DEST_DIR}"
 
-# Idempotent: skip if patch signature already present in destination.
-if ! { [[ -f "${HOOK_DEST}" ]] && grep -q "${PATCH_SIGNATURE}" "${HOOK_DEST}"; }; then
+# Idempotent: copy hook unmodified for silent boot.
+# set -x is incompatible with zero-verbosity boot; debug trace is
+# available via INVARIANT_DEBUG=1 environment variable.
+if [[ ! -f "${HOOK_DEST}" ]]; then
     cp "${HOOK_SOURCE}" "${HOOK_DEST}"
-
-    sed -i \
-        "/${HOOK_FUNC_PATTERN}/a\\    set -x  # ${PATCH_SIGNATURE}" \
-        "${HOOK_DEST}"
-
-    # sed does not error on no-match; verify the insertion explicitly.
-    if ! grep -q "${PATCH_SIGNATURE}" "${HOOK_DEST}"; then
-        rm -f "${HOOK_DEST}"
-        die "FIX-14 patch not applied — sed pattern '${HOOK_FUNC_PATTERN}' not matched in ${HOOK_SOURCE}"
-    fi
 fi
 chmod 644 "${HOOK_DEST}"
 
@@ -755,6 +747,8 @@ cat > "${ISO_ROOT}/syslinux/syslinux.cfg" << 'SYSLINUX'
 UI      menu.c32
 PROMPT  0
 TIMEOUT 30
+MENU HIDDEN
+MENU ROWS 0
 
 MENU TITLE  INVARIANT probe.tex // Ring-0 Forensic Diagnostic
 MENU COLOR border       30;44   #40ffffff #a0000000 std
@@ -779,6 +773,37 @@ grep -q 'systemd.firstboot=0' "${EFI_ENTRY}" || \
 
 grep -q 'systemd.firstboot=0' "${SYSLINUX_CFG}" || \
     sed -i '/APPEND.*quiet.*loglevel=3/ s/$/ systemd.firstboot=0/' "${SYSLINUX_CFG}"
+
+# ════════════════════════════════════════════════════════════
+# SECTION 10.5 — Silent Boot Enforcement
+# ════════════════════════════════════════════════════════════
+# Ensures zero-visibility boot: no kernel spam, no systemd status,
+# no bash xtrace, and no blinking cursor until the TUI takes over.
+
+readonly SILENT_PARAMS="quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 rd.systemd.show_status=false systemd.show_status=false"
+
+# ── systemd-boot (UEFI) entries ──
+while IFS= read -r -d '' entry; do
+    for param in ${SILENT_PARAMS}; do
+        if ! grep -q "^options .*${param}" "${entry}"; then
+            sed -i "s|^\(options .*\)$|\1 ${param}|" "${entry}"
+        fi
+    done
+    # Harden: replace any existing 'auto' with 'false' for show_status
+    sed -i 's/rd.systemd.show_status=auto/rd.systemd.show_status=false/g' "${entry}"
+    sed -i 's/systemd.show_status=auto/systemd.show_status=false/g' "${entry}"
+done < <(find "${ISO_ROOT}/efiboot/loader/entries" -maxdepth 1 -type f -name '*.conf' -print0)
+
+# ── syslinux (BIOS) configs ──
+while IFS= read -r -d '' cfg; do
+    for param in ${SILENT_PARAMS}; do
+        if ! grep -q "^ *APPEND .*${param}" "${cfg}"; then
+            sed -i "/^ *APPEND /s|$| ${param}|" "${cfg}"
+        fi
+    done
+    sed -i 's/rd.systemd.show_status=auto/rd.systemd.show_status=false/g' "${cfg}"
+    sed -i 's/systemd.show_status=auto/systemd.show_status=false/g' "${cfg}"
+done < <(find "${ISO_ROOT}/syslinux" -maxdepth 1 -type f -name '*.cfg' -print0)
 
 # ════════════════════════════════════════════════════════════
 # SECTION 11 — Repository sync

@@ -160,16 +160,17 @@ class Header:
 
     def __rich__(self) -> Panel:
         from rich.table import Table
-        
+        snap = self.state.snapshot()   # Thread-safe read under lock
+
         grid = Table.grid(expand=True)
         grid.add_column(justify="left")
         grid.add_column(justify="right")
-        
-        t = self.state.mission_clock()
+
+        t = snap.mission_clock()
         # Mission clock in redtex (critical status tag)
         right_text = Text(f"T+ {t}  |  ", style=C.redtex)
         right_text.append("probe.tex // Live OS Diagnostic", style=C.slate)
-        
+
         grid.add_row(
             Text("I N V A R I A N T", style=C.primary),
             right_text
@@ -232,20 +233,21 @@ class LogStream:
         self.state = state
 
     def __rich__(self) -> Panel:
-        entries = list(self.state.logs)
-        maxlen  = self.state.logs.maxlen or 25
+        snap = self.state.snapshot()   # Thread-safe read under lock
+        entries = list(snap.logs)
         lines: list[Text] = []
 
         for i, entry in enumerate(entries):
-            active = (i == len(entries) - 1) and self.state.phase == Phase.RUNNING
+            active = (i == len(entries) - 1) and snap.phase == Phase.RUNNING
             lines.append(
                 Text(f"▓ {entry}", style=C.primary)
                 if active
                 else Text(f"░ {entry}", style=C.slate)
             )
 
-        while len(lines) < maxlen:
-            lines.append(Text(""))
+        # REMOVED: while len(lines) < maxlen padding loop.
+        # Empty padding forced Rich to position the cursor on 25 lines
+        # every frame even when only 3 logs existed, causing TTY churn.
 
         return Panel(
             Group(*lines),
@@ -260,31 +262,32 @@ class LogStream:
 class StatusBar:
     def __init__(self, state: TuiState) -> None:
         self.state = state
-
-    def __rich__(self) -> Panel:
-        progress = Progress(
+        self._progress = Progress(
             TextColumn("[{task.percentage:>3.0f}%]", style=C.slate),
             FlatBarColumn(),
             TimeElapsedColumn(),
             expand=True,
         )
-        task_id = progress.add_task("probe", total=100)
+        self._task_id = self._progress.add_task("probe", total=100)
 
-        if self.state.phase == Phase.DONE:
-            progress.update(task_id, completed=100)
+    def __rich__(self) -> Panel:
+        snap = self.state.snapshot()   # Thread-safe read under lock
+
+        if snap.phase == Phase.DONE:
+            self._progress.update(self._task_id, completed=100)
             label = Text("PROBE HALTED // REPORT COMPILED", style=C.redtex, justify="center")
-        elif self.state.phase == Phase.ERROR:
-            progress.update(task_id, completed=self.state.progress_pct)
+        elif snap.phase == Phase.ERROR:
+            self._progress.update(self._task_id, completed=snap.progress_pct)
             label = Text("CRITICAL EXCEPTION", style=C.redtex, justify="center")
-        elif self.state.phase == Phase.RUNNING:
-            progress.update(task_id, completed=self.state.progress_pct)
+        elif snap.phase == Phase.RUNNING:
+            self._progress.update(self._task_id, completed=snap.progress_pct)
             label = Text("ACQUIRING KERNEL TELEMETRY", style=C.primary, justify="center")
         else:
-            progress.update(task_id, completed=0)
+            self._progress.update(self._task_id, completed=0)
             label = Text("SYS_IDLE", style=C.slate)
 
         return Panel(
-            Columns([label, progress], expand=True),
+            Columns([label, self._progress], expand=True),
             border_style=C.border,
             box=box.SQUARE,
             style=C.canvas,
@@ -317,11 +320,27 @@ def run_tui(target_func: Callable[[], None]) -> None:
     state.start()
 
     done_event = Event()
-    FPS: Final = 4          # Delta-update: 4 Hz is sufficient for TTY readability
+    FPS: Final = 8          # 8 Hz is the TTY sweet spot (smooth, no buffer saturation)
     ASSUMED_S  = 45.0
 
     # Build static topology once — never rebuilds during the session.
     topology_layout = Layout(TargetTopology(), name="topology", ratio=1)
+
+    # Build dynamic components and layout tree ONCE.
+    # These object references remain stable for the entire session.
+    header = Header(state)
+    logs   = LogStream(state)
+    status = StatusBar(state)
+    root = Layout(name="root")
+    root.split_column(
+        Layout(header, name="header", size=3),
+        Layout(name="body", ratio=1),
+        Layout(status, name="status", size=3),
+    )
+    root["body"].split_row(
+        topology_layout,
+        Layout(logs, name="logs", ratio=2),
+    )
 
     def _worker() -> None:
         state.update(phase=Phase.RUNNING, log="Mounting sysfs namespace...")
@@ -337,13 +356,13 @@ def run_tui(target_func: Callable[[], None]) -> None:
     with ThreadPoolExecutor(max_workers=1) as pool:
         future: Future[None] = pool.submit(_worker)
 
-        # Standard Linux TTY — screen=False avoids alternate buffer hang
-        # after input() manipulates line discipline on raw VT.
+        # auto_refresh=False: we control render timing manually via refresh().
+        # screen=False preserves compatibility with raw VT after input() calls.
         with Live(
-            _compose(state.snapshot(), topology_layout),
+            root,
             console=console,
             screen=False,
-            refresh_per_second=FPS,
+            auto_refresh=False,
             transient=False,
         ) as live:
             start_t = time.monotonic()
@@ -353,10 +372,11 @@ def run_tui(target_func: Callable[[], None]) -> None:
                 pct     = min(99.0, (elapsed / ASSUMED_S) * 100)
 
                 state.update(pct=pct)
-                live.update(_compose(state.snapshot(), topology_layout), refresh=True)
+                live.refresh()          # DIFFERENTIAL: only changed cells rewrite
                 time.sleep(1 / FPS)
 
-            live.update(_compose(state.snapshot(), topology_layout), refresh=True)
+            # Final render after worker completion to show DONE/ERROR state
+            live.refresh()
             time.sleep(0.5)
 
     exc = future.exception()
