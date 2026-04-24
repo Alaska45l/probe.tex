@@ -53,6 +53,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import os
 import stat
 import subprocess
@@ -263,82 +264,210 @@ def _write_hwm_atomic(rtc_unix: int) -> None:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  LAYER 2 — Hardware Fingerprint (RD-4 from Phase 1 Node 2c)
+#  LAYER 2 — Hardware Fingerprint (USB DONGLE MODE)
 # ════════════════════════════════════════════════════════════════════════════
 
-_DMI_FIELDS = ("system-uuid", "baseboard-serial-number")
-_INVALID_VALUES = frozenset({
-    "to be filled", "default string", "none", "o.e.m",
-    "not applicable", "not specified", "unknown", "",
-})
+_JUNK_SERIAL = re.compile(r"^0+$|^none$|^null$", re.IGNORECASE)
 
 
-def _read_dmi(field: str) -> Optional[str]:
-    """Read a DMI field from sysfs, returning None if invalid or missing."""
-    path = Path(f"/sys/class/dmi/id/{field}")
-    try:
-        val = path.read_text(encoding="utf-8").strip()
-        if not val:
-            return None
-        vlow = val.lower()
-        if any(inv in vlow for inv in _INVALID_VALUES):
-            return None
-        return val
-    except OSError:
-        return None
+class HardwareBindingError(Exception):
+    """Raised when the INVARIANT USB device cannot be resolved from the running system."""
+    pass
 
 
-def _read_cpuid() -> Optional[str]:
-    """Read Processor ID via dmidecode."""
+def _get_parent_device(partition_path: str) -> str | None:
+    """Given a partition path, return its parent block device path (e.g. /dev/sdb)."""
     try:
         result = subprocess.run(
-            ["dmidecode", "-s", "processor-id"],
-            capture_output=True, text=True, timeout=5, check=False,
+            ["lsblk", "-no", "pkname", partition_path],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
         )
-        val = result.stdout.strip()
-        if val and not any(inv in val.lower() for inv in _INVALID_VALUES):
-            return val
+        pkname = result.stdout.strip()
+        if pkname:
+            return f"/dev/{pkname}"
     except Exception:
         pass
     return None
 
 
-def _read_tpm_hash() -> Optional[str]:
-    """Read TPM EK public hash via tpm2_readpublic."""
+def _try_resolve_invariant_device() -> str | None:
+    """Single attempt at resolving the INVARIANT parent block device."""
+    label_link = Path("/dev/disk/by-label/INVARIANT")
+    if label_link.exists():
+        try:
+            partition = str(label_link.resolve(strict=True))
+            parent = _get_parent_device(partition)
+            if parent:
+                return parent
+        except Exception:
+            pass
+
+    for mount_point in ("/mnt/invariant_data", "/run/media/root/INVARIANT"):
+        try:
+            result = subprocess.run(
+                ["findmnt", "-n", "-o", "SOURCE", mount_point],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            source = result.stdout.strip()
+            if not source:
+                continue
+
+            src_path = Path(source)
+            if not src_path.exists() and Path("/dev", source).exists():
+                src_path = Path("/dev", source)
+
+            if src_path.exists():
+                partition = str(src_path.resolve(strict=True))
+                parent = _get_parent_device(partition)
+                if parent:
+                    return parent
+        except Exception:
+            pass
+
+    return None
+
+
+def _resolve_invariant_device() -> str:
+    """
+    Resolve the parent block device of the INVARIANT USB partition.
+
+    Retry loop guards against udev races on slow xHCI hubs.
+    Raises HardwareBindingError if resolution fails after all attempts.
+    """
+    for attempt in range(1, 4):
+        device = _try_resolve_invariant_device()
+        if device:
+            return device
+        if attempt < 3:
+            subprocess.run(
+                ["udevadm", "settle", "--timeout=3"],
+                capture_output=True,
+                timeout=5,
+            )
+    raise HardwareBindingError(
+        "INVARIANT device resolution failed: label not found and mount table "
+        "contains no INVARIANT partition after 3 attempts"
+    )
+
+
+def _udevadm_properties(device: str) -> dict[str, str]:
+    """Query udev properties for a block device. Returns empty dict on failure."""
     try:
         result = subprocess.run(
-            ["tpm2_readpublic", "-c", "0x81010001", "-o", "/dev/null", "-f", "plain"],
-            capture_output=True, text=True, timeout=10, check=False,
+            ["udevadm", "info", "--query=property", f"--name={device}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
         )
-        if result.returncode == 0 and result.stdout:
-            return hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
+        props: dict[str, str] = {}
+        for line in result.stdout.strip().splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                props[key] = value
+        return props
+    except Exception:
+        return {}
+
+
+def _get_device_size_bytes(device: str) -> str:
+    """Return device size in bytes via blockdev. Returns 'unknown' on failure."""
+    try:
+        result = subprocess.run(
+            ["blockdev", "--getsize64", device],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        size = result.stdout.strip()
+        if size.isdigit():
+            return size
     except Exception:
         pass
-    return None
+    return "unknown"
+
+
+def _resolve_invariant_partition() -> str:
+    """Resolve the INVARIANT partition device path."""
+    label_link = Path("/dev/disk/by-label/INVARIANT")
+    if label_link.exists():
+        return str(label_link.resolve(strict=True))
+    parent = _resolve_invariant_device()
+    for suffix in ("1", "2", "p1", "p2"):
+        candidate = Path(f"{parent}{suffix}")
+        if candidate.exists():
+            return str(candidate)
+    raise HardwareBindingError("Could not resolve INVARIANT partition device")
+
+
+def _extract_usb_serial(block_device: str) -> tuple[str, str]:
+    """
+    Extract a serial identifier from the USB block device.
+
+    Returns (serial_value, confidence_level) where confidence_level is one of:
+        HIGH   -> physical iSerial or ID_SERIAL_SHORT from udev
+        MEDIUM -> drive firmware serial (ID_SERIAL full string)
+        LOW    -> deterministic fallback of geometry + fs UUID + label
+    """
+    props = _udevadm_properties(block_device)
+
+    for key in ("ID_USB_SERIAL", "ID_SERIAL_SHORT"):
+        val = props.get(key, "").strip()
+        if val and not _JUNK_SERIAL.match(val):
+            return (val, "HIGH")
+
+    id_serial = props.get("ID_SERIAL", "").strip()
+    if id_serial and not _JUNK_SERIAL.match(id_serial):
+        return (id_serial, "MEDIUM")
+
+    geometry = _get_device_size_bytes(block_device)
+    partition = _resolve_invariant_partition()
+    part_props = _udevadm_properties(partition)
+    fs_uuid = part_props.get("ID_FS_UUID", "").strip()
+    label = part_props.get("ID_FS_LABEL", "INVARIANT").strip()
+
+    fallback_input = f"geom={geometry}\nuuid={fs_uuid}\nlabel={label}"
+    fallback_hash = hashlib.sha256(fallback_input.encode("utf-8")).hexdigest()[:32]
+    return (fallback_hash, "LOW")
 
 
 def _compute_hwid() -> str:
-    """Compute canonical hardware fingerprint."""
-    components: list[str] = []
+    """
+    Compute the hardware fingerprint of the INVARIANT USB dongle.
 
-    for field in _DMI_FIELDS:
-        val = _read_dmi(field)
-        if val is not None:
-            components.append(f"dmi:{field}:{val}")
+    The HWID is bound to the physical USB device, not the host machine,
+    enabling the roaming technician workflow.
 
-    cpuid = _read_cpuid()
-    if cpuid is not None:
-        components.append(f"cpu:id:{cpuid}")
+    Returns a string of the form '<confidence>:<64-char-hex>' so that
+    HIGH- and LOW-confidence HWIDs are structurally distinguishable.
+    """
+    try:
+        parent_device = _resolve_invariant_device()
+        serial, confidence = _extract_usb_serial(parent_device)
 
-    tpm_hash = _read_tpm_hash()
-    if tpm_hash is not None:
-        components.append(f"tpm:ek:{tpm_hash}")
+        partition = _resolve_invariant_partition()
+        part_props = _udevadm_properties(partition)
+        fs_uuid = part_props.get("ID_FS_UUID", "").strip()
 
-    if not components:
-        raise LicenseError(LicenseErrorCode.FINGERPRINT_UNAVAILABLE)
+        composite = (
+            f"usb_serial={serial}\n"
+            f"fs_uuid={fs_uuid}\n"
+            f"confidence={confidence}"
+        ).encode("utf-8")
 
-    canonical = "\x00".join(sorted(components))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        key = bytes.fromhex(_EMBEDDED_PUBKEY_HEX)
+        hwid_digest = hmac.new(key, composite, hashlib.sha256).hexdigest()
+
+        return f"{confidence}:{hwid_digest}"
+    except HardwareBindingError as exc:
+        raise LicenseError(LicenseErrorCode.FINGERPRINT_UNAVAILABLE, str(exc))
 
 
 # ════════════════════════════════════════════════════════════════════════════

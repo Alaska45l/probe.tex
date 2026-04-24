@@ -840,6 +840,15 @@ sed -i \
     "${VERIFIER_FILE}" \
     || die "Failed to inject _ISO_BUILD_TIMESTAMP into ${VERIFIER_FILE}"
 
+# J: Ed25519 public key injection into license verifier.
+# The sentinel "0" * 64 in license_verifier.py must be replaced with the
+# production public key so that bootstrap.sig tokens verify correctly.
+readonly PRODUCTION_PUBKEY="98ee0e2e03126d80cbd5e846acc0a6afa83d19ad3d6c84424a0a093bf46adeed"
+sed -i \
+    "s/^_EMBEDDED_PUBKEY_HEX: str = .*$/_EMBEDDED_PUBKEY_HEX: str = \"${PRODUCTION_PUBKEY}\"  # FORGE_PATCH_PUBKEY/" \
+    "${VERIFIER_FILE}" \
+    || die "Failed to inject _EMBEDDED_PUBKEY_HEX into ${VERIFIER_FILE}"
+
 # ════════════════════════════════════════════════════════════
 # SECTION 12 — Tectonic cache injection
 #
@@ -946,5 +955,14 @@ readonly _FIRSTBOOT_MASK="${ISO_ROOT}/airootfs/etc/systemd/system/systemd-firstb
     die "systemd-firstboot.service not masked — FIX-15 layer 3 incomplete"
 [[ "$(readlink "${_FIRSTBOOT_MASK}")" == "/dev/null" ]] || \
     die "systemd-firstboot.service symlink does not point to /dev/null"
+
+# J: Ed25519 public key post-condition.
+# Verify that the production key was injected and the sentinel is gone.
+_INJECTED_PUBKEY="$(grep '^_EMBEDDED_PUBKEY_HEX: str = ' "${VERIFIER_FILE}" \
+    | sed 's/.*= "\([^"]*\)".*/\1/')"
+[[ "${_INJECTED_PUBKEY}" == "${PRODUCTION_PUBKEY}" ]] || die \
+    "_EMBEDDED_PUBKEY_HEX mismatch: injected='${_INJECTED_PUBKEY}' expected='${PRODUCTION_PUBKEY}'"
+[[ "${_INJECTED_PUBKEY}" != "0000000000000000000000000000000000000000000000000000000000000000" ]] || die \
+    "_EMBEDDED_PUBKEY_HEX is still the sentinel value — forge.sh injection failed"
 
 printf 'ISO successfully generated\n'
