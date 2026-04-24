@@ -382,36 +382,43 @@ RST='\e[0m'
 
 # ── Function Definitions ─────────────────────────────────────────────────────
 
+_draw_hline() {
+    local color="${1:-$BRD}"
+    local width=$(( ${COLUMNS:-70} - 4 ))
+    [[ $width -lt 20 ]] && width=60
+    printf "%s%*s%s\n" "${color}" "${width}" "" "${RST}" | tr ' ' '─'
+}
+
 _header() {
     clear || true
     echo ""
-    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
-    echo -e "${BRD}▓${LGT}                                                                       ${RST}${BRD}▓${RST}"
-    echo -e "${BRD}▓${LGT}  ${PRI}I N V A R I A N T${LGT}  ${SLT}//${LGT}  ${PRI}S Y S T E M   D I A G N O S T I C${LGT}             ${RST}${BRD}▓${RST}"
-    echo -e "${BRD}▓${LGT}                                                                       ${RST}${BRD}▓${RST}"
-    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+    _draw_hline "${BRD}"
     echo ""
-    echo -e "  ${SLT}MODULE ${BRD}│${RST} ${PRI}probe.tex v1.0.0${RST}"
-    echo -e "  ${SLT}KERNEL ${BRD}│${RST} ${PRI}$(uname -r)${RST}"
-    echo -e "  ${SLT}UPTIME ${BRD}│${RST} ${PRI}$(cut -d. -f1 /proc/uptime)s${RST}"
-    echo -e "  ${SLT}MEMORY ${BRD}│${RST} ${PRI}$(awk '/MemTotal/{printf "%.0f MB", $2/1024}' /proc/meminfo)${RST}"
+    echo -e "  ${PRI}I N V A R I A N T${RST}  ${SLT}//${RST}  ${PRI}S Y S T E M   D I A G N O S T I C${RST}"
+    echo ""
+    _draw_hline "${BRD}"
+    echo ""
+    echo -e "  ${SLT}MODULE${RST}  ${PRI}probe.tex v1.0.0${RST}"
+    echo -e "  ${SLT}KERNEL${RST}  ${PRI}$(uname -r)${RST}"
+    echo -e "  ${SLT}UPTIME${RST}  ${PRI}$(cut -d. -f1 /proc/uptime)s${RST}"
+    echo -e "  ${SLT}MEMORY${RST}  ${PRI}$(awk '/MemTotal/{printf "%.0f MB", $2/1024}' /proc/meminfo)${RST}"
     echo ""
 }
 
 _menu() {
     _header
-    echo -e "${BRD}┌──────────────────────────────────────────────────────────────────────┐${RST}"
-    echo -e "${BRD}│${RST}  ${RED}[ 1 ]${RST} ${PRI}INIT DIAGNOSTIC${RST}    ${SLT}Ejecutar probe.tex y generar reporte PDF${RST}   ${BRD}│${RST}"
-    echo -e "${BRD}│${RST}                                                                      ${BRD}│${RST}"
-    echo -e "${BRD}│${RST}  ${RED}[ 2 ]${RST} ${PRI}FORCE SHUTDOWN${RST}     ${SLT}Apagado forzado del sistema a nivel kernel${RST} ${BRD}│${RST}"
-    echo -e "${BRD}└──────────────────────────────────────────────────────────────────────┘${RST}"
+    echo -e "  ${RED}[ 1 ]${RST} ${PRI}INIT DIAGNOSTIC${RST}    ${SLT}Ejecutar probe.tex y generar reporte PDF${RST}"
+    echo ""
+    echo -e "  ${RED}[ 2 ]${RST} ${PRI}FORCE SHUTDOWN${RST}     ${SLT}Apagado forzado del sistema a nivel kernel${RST}"
+    echo ""
+    _draw_hline "${BRD}"
     echo ""
     echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
 }
 
 _shutdown() {
     echo ""
-    echo -e "  ${RED}[ ▓ ] Forzando apagado del kernel...${RST}"
+    echo -e "  ${RED}[ * ] Forzando apagado del kernel...${RST}"
     sync
     poweroff -f || true
 }
@@ -419,11 +426,11 @@ _shutdown() {
 _run_diagnostic() {
     clear || true
     echo ""
-    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
-    echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
-    echo -e "${BRD}▓${LGT}  ${PRI}I N V A R I A N T${LGT}  ${SLT}//${LGT}  ${PRI}S E C U E N C I A   D E   D I A G N Ó S T I C O${LGT}  ${RST}${BRD}▓${RST}"
-    echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
-    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+    _draw_hline "${BRD}"
+    echo ""
+    echo -e "  ${PRI}I N V A R I A N T${RST}  ${SLT}//${RST}  ${PRI}S E C U E N C I A   D E   D I A G N Ó S T I C O${RST}"
+    echo ""
+    _draw_hline "${BRD}"
     echo ""
 
     local outdir="/tmp"
@@ -432,16 +439,16 @@ _run_diagnostic() {
     # --- FIX: Synchronous mount of INVARIANT data partition ---
     mkdir -p /mnt/invariant_data
     if ! mountpoint -q /mnt/invariant_data; then
-        echo -e "  ${NTC}[ ▓ ] Reparando y montando partición de datos (INVARIANT)...${RST}"
+        echo -e "  ${NTC}[ * ] Reparando y montando partición de datos (INVARIANT)...${RST}"
         fsck.exfat -y /dev/disk/by-label/INVARIANT 2>/dev/null || true
         if ! mount -t exfat -L INVARIANT /mnt/invariant_data 2> /tmp/mount_err.log; then
-            echo -e "  ${RED}[ ▓ ] ERROR CRÍTICO: No se pudo montar la partición INVARIANT.${RST}"
+            echo -e "  ${RED}[ * ] ERROR CRÍTICO: No se pudo montar la partición INVARIANT.${RST}"
             cat /tmp/mount_err.log
             return 1
         fi
     fi
     if ! touch /mnt/invariant_data/.rw_probe 2>/dev/null; then
-        echo -e "  ${RED}[ ▓ ] ERROR CRÍTICO: Partición INVARIANT montada en modo SOLO LECTURA.${RST}"
+        echo -e "  ${RED}[ * ] ERROR CRÍTICO: Partición INVARIANT montada en modo SOLO LECTURA.${RST}"
         return 1
     fi
     rm -f /mnt/invariant_data/.rw_probe
@@ -480,12 +487,12 @@ _run_diagnostic() {
                 if cp "${outdir}/reporte_generado.pdf" \
                       "${inv_mnt}/reporte_${ts}.pdf" 2>/dev/null; then
                     sync
-                    echo -e "  ${PRI}[ ▓ ] Auto-saved to INVARIANT partition${RST}"
+                    echo -e "  ${PRI}[ * ] Auto-saved to INVARIANT partition${RST}"
                 else
-                    echo -e "  ${NTC}[ ▓ ] Auto-save copy failed (filesystem full?)${RST}"
+                    echo -e "  ${NTC}[ * ] Auto-save copy failed (filesystem full?)${RST}"
                 fi
             else
-                echo -e "  ${RED}[ ▓ ] INVARIANT partition is read-only (dirty bit).${RST}"
+                echo -e "  ${RED}[ * ] INVARIANT partition is read-only (dirty bit).${RST}"
                 echo -e "  ${NTC}      PDF remains available at: ${outdir}/reporte_generado.pdf${RST}"
             fi
 
@@ -493,15 +500,15 @@ _run_diagnostic() {
             umount "${inv_mnt}" 2>/dev/null || true
         fi
         echo ""
-        echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
-        echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
-        echo -e "${BRD}▓${LGT}  ${PRI}[ ▓ ]  D I A G N Ó S T I C O   C O M P L E T A D O${LGT}           ${RST}${BRD}▓${RST}"
-        echo -e "${BRD}▓${LGT}       ${NTC}Reporte disponible en: ${PRI}${outdir}/reporte_generado.pdf${LGT}       ${RST}${BRD}▓${RST}"
-        echo -e "${BRD}▓${LGT}                                                               ${RST}${BRD}▓${RST}"
-        echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+        _draw_hline "${BRD}"
+        echo ""
+        echo -e "  ${PRI}[ * ]  D I A G N Ó S T I C O   C O M P L E T A D O${RST}"
+        echo -e "  ${NTC}Reporte disponible en: ${PRI}${outdir}/reporte_generado.pdf${RST}"
+        echo ""
+        _draw_hline "${BRD}"
     else
         echo ""
-        echo -e "  ${RED}[ ▓ ] El diagnóstico terminó con errores.${RST}"
+        echo -e "  ${RED}[ * ] El diagnóstico terminó con errores.${RST}"
         if [[ -s /tmp/invariant_error.log ]]; then
             echo -e "  ${RED}─── Últimas líneas del log de error ───${RST}"
             tail -n 20 /tmp/invariant_error.log
@@ -520,18 +527,18 @@ _run_diagnostic() {
 _extract_to_usb() {
     clear || true
     echo ""
-    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
-    echo -e "${BRD}▓${LGT}                                                                       ${RST}${BRD}▓${RST}"
-    echo -e "${BRD}▓${LGT}  ${PRI}I N V A R I A N T${LGT}  ${SLT}//${LGT}  ${PRI}M Ó D U L O   D E   E X F I L T R A C I Ó N${LGT}  ${RST}${BRD}▓${RST}"
-    echo -e "${BRD}▓${LGT}                                                                       ${RST}${BRD}▓${RST}"
-    echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+    _draw_hline "${BRD}"
+    echo ""
+    echo -e "  ${PRI}I N V A R I A N T${RST}  ${SLT}//${RST}  ${PRI}M Ó D U L O   D E   E X F I L T R A C I Ó N${RST}"
+    echo ""
+    _draw_hline "${BRD}"
     echo ""
 
     local pdf_src="/tmp/reporte_generado.pdf"
 
     if [[ ! -f "${pdf_src}" ]]; then
-        echo -e "  ${RED}[ ▓ ] No se encontró ${pdf_src}${RST}"
-        echo -e "       ${NTC}Ejecute primero la Directiva [ ▓ ] para generar el reporte.${RST}"
+        echo -e "  ${RED}[ * ] No se encontró ${pdf_src}${RST}"
+        echo -e "       ${NTC}Ejecute primero la Directiva [ * ] para generar el reporte.${RST}"
         echo ""
         echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
         read -rp "Presione ENTER para volver..." _ || true
@@ -539,7 +546,7 @@ _extract_to_usb() {
         return
     fi
 
-    echo -e "  ${NTC}[ ▓ ] Inserte el pendrive USB (FAT32 o exFAT) y presione ENTER.${RST}"
+    echo -e "  ${NTC}[ * ] Inserte el pendrive USB (FAT32 o exFAT) y presione ENTER.${RST}"
     echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
     read -rp "[ENTER para escanear dispositivos] " _ || true
     echo -e "${RST}"
@@ -556,7 +563,7 @@ _extract_to_usb() {
     local usb_dev="/dev/${usb_node}"
 
     if [[ ! -b "${usb_dev}" ]]; then
-        echo -e "  ${RED}[ ▓ ] Dispositivo '${usb_dev}' no encontrado.${RST}"
+        echo -e "  ${RED}[ * ] Dispositivo '${usb_dev}' no encontrado.${RST}"
         echo -ne "${PRI}[INVARIANT_TTY]> ${RED}"
         read -rp "Presione ENTER para volver..." _ || true
         echo -e "${RST}"
@@ -566,20 +573,20 @@ _extract_to_usb() {
     local mnt="/mnt/usb_export"
     mkdir -p "${mnt}"
 
-    echo -e "  ${NTC}[ ▓ ] Montando ${usb_dev} en ${mnt}...${RST}"
+    echo -e "  ${NTC}[ * ] Montando ${usb_dev} en ${mnt}...${RST}"
     if mount "${usb_dev}" "${mnt}" 2>/dev/null; then
         local dest="${mnt}/reporte_generado_$(date +%Y%m%d_%H%M%S).pdf"
         if cp "${pdf_src}" "${dest}" 2>/dev/null; then
             sync
             umount "${mnt}" 2>/dev/null || true
-            echo -e "  ${PRI}[ ▓ ] Reporte copiado exitosamente.${RST}"
+            echo -e "  ${PRI}[ * ] Reporte copiado exitosamente.${RST}"
             echo -e "       ${NTC}Archivo: $(basename "${dest}")${RST}"
         else
-            echo -e "  ${RED}[ ▓ ] Error al copiar el reporte.${RST}"
+            echo -e "  ${RED}[ * ] Error al copiar el reporte.${RST}"
             umount "${mnt}" 2>/dev/null || true
         fi
     else
-        echo -e "  ${RED}[ ▓ ] Error al montar ${usb_dev}. ¿Formato compatible (FAT32/exFAT)?${RST}"
+        echo -e "  ${RED}[ * ] Error al montar ${usb_dev}. ¿Formato compatible (FAT32/exFAT)?${RST}"
     fi
 
     echo ""
@@ -607,11 +614,11 @@ main() {
             3)
                clear || true
                echo ""
-               echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
-               echo -e "${BRD}▓${LGT}                                                                       ${RST}${BRD}▓${RST}"
-               echo -e "${BRD}▓${LGT}  ${RED}W A R N I N G${LGT}  ${SLT}//${LGT}  ${NTC}Root shell access is logged and recorded.${LGT}         ${RST}${BRD}▓${RST}"
-               echo -e "${BRD}▓${LGT}                                                                       ${RST}${BRD}▓${RST}"
-               echo -e "${BRD}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓${RST}"
+               _draw_hline "${RED}"
+               echo ""
+               echo -e "  ${RED}W A R N I N G${RST}  ${SLT}//${RST}  ${NTC}Root shell access is logged and recorded.${RST}"
+               echo ""
+               _draw_hline "${RED}"
                echo ""
                PS1="\[\e[38;2;255;68;68m\][ring-0] \W #\[\e[0m\] " \
                    script -q /tmp/shell_session_$(date +%s).log -c bash || true

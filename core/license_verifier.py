@@ -1229,11 +1229,14 @@ def _verify_bound_license_flow(raw_token: str, rtc_now: datetime) -> LicensePayl
         f"[LICENSE DEBUG] BOUND_LICENSE_FLOW: raw[:50]={raw_token[:50]!r} "
         f"rtc_now={rtc_now.isoformat()}\n"
     )
-    json_bytes, sig_bytes = _split_token(raw_token)
-    verify_key = _get_verify_key()
 
-    # Try Ed25519 first (server-signed license from handleForgeLicense)
+    # Try Ed25519 first (server-signed license from handleForgeLicense).
+    # _split_token and _get_verify_key are inside the try block so that
+    # TOKEN_SIGNATURE_SIZE_INVALID (32-byte HMAC sig) is caught by the
+    # fallback handler instead of crashing the process.
     try:
+        json_bytes, sig_bytes = _split_token(raw_token)
+        verify_key = _get_verify_key()
         _verify_signature(json_bytes, sig_bytes, verify_key)
         _log.info("Signature: VALID (Ed25519)")
         payload = _parse_payload(json_bytes)
