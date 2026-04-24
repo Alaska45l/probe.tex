@@ -88,6 +88,11 @@ from extractors.usb_reader import extract_usb_data
 from extractors.battery_reader import extract_battery_data
 from tui import run_tui, runtime_log
 
+# ── Base directory anchor (CWD-agnostic) ─────────────────────────────────────
+# All asset paths resolve relative to the script's installation directory,
+# never the mutable process working directory.
+BASE_DIR: Final[Path] = Path(__file__).resolve().parent
+
 # ── Logging estructurado — silencioso ante el usuario final ──────────────────
 # Los mensajes van a un archivo de log en /tmp (o INVARIANT_LOG si existe).
 # Nunca se imprimen en stdout.
@@ -198,14 +203,14 @@ def _resolve_outdir(args_outdir: str | None) -> Path:
     """
     Resuelve el directorio de salida con verificación de escritura.
 
-    Prioridad: argumento CLI → $INVARIANT_OUT → cwd → /tmp.
+    Prioridad: argumento CLI → $INVARIANT_OUT → /tmp.
     """
     if args_outdir:
         p = Path(args_outdir)
     elif "INVARIANT_OUT" in os.environ:
         p = Path(os.environ["INVARIANT_OUT"])
     else:
-        p = Path.cwd()
+        p = Path("/tmp")
 
     test_file = p / ".invariant_write_test"
     try:
@@ -373,7 +378,7 @@ def render_pdf(outdir: Path | None = None) -> None:
         variable_start_string= '<<',  variable_end_string= '>>',
         comment_start_string = '[#',  comment_end_string = '#]',
         trim_blocks  = True,
-        loader       = jinja2.FileSystemLoader('renderer/templates'),
+        loader       = jinja2.FileSystemLoader(str(BASE_DIR / 'renderer' / 'templates')),
         finalize     = _tex_escape,
     )
 
