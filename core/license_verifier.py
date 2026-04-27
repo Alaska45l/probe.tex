@@ -532,31 +532,40 @@ def _verify_bound_license_flow(raw_token: str, rtc_unix: int) -> LicensePayload:
     if not _PROV_STAMP_FILE.exists():
         raise LicenseError(LicenseErrorCode.ERR_WITNESS_MISSING)
 
-    # 2. Structural split
-    parts = raw_token.split(".")
+    # 2. Structural split + explicit per-part strip
+    parts = [p.strip() for p in raw_token.split(".")]
     if len(parts) != 2:
         raise LicenseError(LicenseErrorCode.SIGNATURE_INVALID, "Malformed token")
 
-    # 3. Decode
+    b64_payload, b64_sig = parts[0], parts[1]
+
+    # 3. Decode raw base64url components (never re-serialize)
     try:
-        json_bytes = _b64url_decode(parts[0])
-        sig_bytes = _b64url_decode(parts[1])
+        json_bytes = _b64url_decode(b64_payload)
+        sig_bytes = _b64url_decode(b64_sig)
     except Exception as exc:
         raise LicenseError(LicenseErrorCode.SIGNATURE_INVALID, f"Decode error: {exc}")
 
-    # 4. Secret presence
+    # 4. Secret presence — strict hex validation
     secret_hex = _read_file_safe(_SECRET_FILE)
-    if secret_hex is None or len(secret_hex) != 64:
+    if secret_hex is None:
         raise LicenseError(
-            LicenseErrorCode.BOUND_SIGNATURE_INVALID, "Missing or malformed secret"
+            LicenseErrorCode.BOUND_SIGNATURE_INVALID, "Missing secret file"
+        )
+    secret_hex = secret_hex.strip()
+    if len(secret_hex) != 64:
+        raise LicenseError(
+            LicenseErrorCode.BOUND_SIGNATURE_INVALID, f"Secret length {len(secret_hex)} != 64"
         )
     try:
         secret_bytes = bytes.fromhex(secret_hex)
-        if len(secret_bytes) != 32:
-            raise ValueError
-    except Exception:
+    except ValueError:
         raise LicenseError(
-            LicenseErrorCode.BOUND_SIGNATURE_INVALID, "Malformed secret hex"
+            LicenseErrorCode.BOUND_SIGNATURE_INVALID, "Secret is not valid hex"
+        )
+    if len(secret_bytes) != 32:
+        raise LicenseError(
+            LicenseErrorCode.BOUND_SIGNATURE_INVALID, f"Secret decoded to {len(secret_bytes)} bytes"
         )
 
     # 5. Parse payload
@@ -567,12 +576,19 @@ def _verify_bound_license_flow(raw_token: str, rtc_unix: int) -> LicensePayload:
 
     if payload.get("v") != 1:
         raise LicenseError(LicenseErrorCode.SIGNATURE_INVALID, "Bad version")
-    if not isinstance(payload.get("hardware_id"), str) or len(payload["hardware_id"]) != 64:
-        raise LicenseError(LicenseErrorCode.SIGNATURE_INVALID, "Bad hardware_id")
+
+    hwid = payload.get("hardware_id", "")
+    if not isinstance(hwid, str) or len(hwid) < 64:
+        raise LicenseError(LicenseErrorCode.SIGNATURE_INVALID, "Bad hardware_id length")
+    # Accept legacy 64-char hex OR prefixed HIGH:/MEDIUM:/LOW: format
+    _hwid_digest = hwid.split(":")[-1]
+    if len(_hwid_digest) != 64:
+        raise LicenseError(LicenseErrorCode.SIGNATURE_INVALID, "Bad hardware_id digest length")
     try:
-        bytes.fromhex(payload["hardware_id"])
-    except Exception:
-        raise LicenseError(LicenseErrorCode.SIGNATURE_INVALID, "Non-hex hardware_id")
+        bytes.fromhex(_hwid_digest)
+    except ValueError:
+        raise LicenseError(LicenseErrorCode.SIGNATURE_INVALID, "Non-hex hardware_id digest")
+
     if not isinstance(payload.get("subscription_id"), str) or not payload["subscription_id"]:
         raise LicenseError(LicenseErrorCode.SIGNATURE_INVALID, "Bad subscription_id")
     for int_key in ("issued_at", "expires_at", "activated_at"):
@@ -588,11 +604,11 @@ def _verify_bound_license_flow(raw_token: str, rtc_unix: int) -> LicensePayload:
     # 7. Derive bound key (RD-4)
     bound_key = hmac.new(
         secret_bytes,
-        (payload["subscription_id"] + payload["hardware_id"] + "|bound_v1").encode(),
+        (payload["subscription_id"] + hwid + "|bound_v1").encode(),
         hashlib.sha256,
     ).digest()
 
-    # 8. Verify HMAC
+    # 8. Verify HMAC over raw JSON bytes (NOT a re-serialized string)
     expected_sig = hmac.new(bound_key, json_bytes, hashlib.sha256).digest()
     if not hmac.compare_digest(expected_sig, sig_bytes):
         raise LicenseError(LicenseErrorCode.SIGNATURE_INVALID)
