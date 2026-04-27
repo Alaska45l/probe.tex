@@ -301,6 +301,16 @@ file_permissions=(
 )
 PROFILEDEF
 
+# =============================================================================
+# SECTION 4 patch — add splash.sh to profiledef.sh file_permissions
+# =============================================================================
+PROFILEDEF_FILE="${ISO_ROOT}/profiledef.sh"
+if ! grep -q '"/root/splash.sh"' "${PROFILEDEF_FILE}"; then
+    sed -i 's|\(\["/root/launcher\.sh"\]="0:0:755"\)|\1\n  ["/root/splash.sh"]="0:0:755"|' \
+        "${PROFILEDEF_FILE}" \
+        || die "Failed to inject splash.sh into profiledef.sh file_permissions"
+fi
+
 # ════════════════════════════════════════════════════════════
 # SECTION 5 — pacman.conf
 # ════════════════════════════════════════════════════════════
@@ -624,6 +634,90 @@ main "$@"
 LAUNCHER
 chmod +x "${ISO_ROOT}/airootfs/root/launcher.sh"
 
+# =============================================================================
+# SECTION 7.5 — splash.sh creation
+# =============================================================================
+cat > "${ISO_ROOT}/airootfs/root/splash.sh" << 'SPLASH'
+#!/bin/bash
+# set -euo pipefail intentionally omitted: early-boot TTY writes can fail
+# transiently; -e would exit without restoring the cursor.
+
+echo -en "\e[?25l"
+trap 'echo -en "\e[?25h\e[0m"; exit 0' TERM INT
+
+echo -en "\e[48;2;20;20;20m\e[2J\e[H"
+
+echo -en "\e[38;2;229;229;229m"
+echo "                                                  "
+echo "                                                  "
+echo "                 I N V A R I A N T                "
+echo "                                                  "
+echo "            FORENSIC DIAGNOSTIC PLATFORM          "
+echo "                                                  "
+echo "                                                  "
+echo ""
+echo -en "\e[38;2;115;115;115m"
+echo "                  Initializing environment..."
+echo ""
+
+frames=$'-\\|/'
+i=0
+count=0
+echo -en "\e[38;2;255;68;68m"
+while [[ ! -f /tmp/stop_splash ]] && [[ $count -lt 600 ]]; do
+    frame="${frames:i:1}"
+    printf "\r  %s  Loading probe.tex   " "$frame"
+    sleep 0.1
+    i=$(( (i + 1) % 4 ))
+    count=$(( count + 1 ))
+done
+
+echo -en "\r\e[2K\e[0m\e[2J\e[H\e[?25h"
+SPLASH
+chmod +x "${ISO_ROOT}/airootfs/root/splash.sh"
+
+# =============================================================================
+# SECTION 7 patch — menu.py preamble injection
+# =============================================================================
+MENU_PY="${ISO_ROOT}/airootfs/root/probe.tex/menu.py"
+[[ -f "${MENU_PY}" ]] || die "menu.py not found at ${MENU_PY}"
+
+if ! grep -q '# --- SPLASH HANDOFF ---' "${MENU_PY}"; then
+    python3 - "${MENU_PY}" << 'PYINJECT'
+import sys, pathlib
+
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text().splitlines(keepends=True)
+
+handoff = (
+    "\n"
+    "# --- SPLASH HANDOFF ---\n"
+    "import pathlib as _pl, time as _time\n"
+    "_pl.Path('/tmp/stop_splash').touch()\n"
+    "_time.sleep(0.2)\n"
+    "import sys as _sys\n"
+    "_sys.stdout.write('\\033[?25h\\033[0m\\033[2J\\033[H')\n"
+    "_sys.stdout.flush()\n"
+    "# --- END SPLASH HANDOFF ---\n"
+    "\n"
+)
+
+insert_at = len(lines)
+for idx, line in enumerate(lines):
+    stripped = line.strip()
+    if stripped.startswith('#') or stripped == '':
+        continue
+    if stripped.startswith('import ') or stripped.startswith('from '):
+        continue
+    insert_at = idx
+    break
+
+lines.insert(insert_at, handoff)
+path.write_text(''.join(lines))
+print(f"Splash handoff injected at line {insert_at} of {path}")
+PYINJECT
+fi
+
 # ════════════════════════════════════════════════════════════
 # SECTION 8 — invariant-probe.service
 # ════════════════════════════════════════════════════════════
@@ -703,6 +797,36 @@ if [ "$(tty)" = "/dev/tty1" ]; then
 fi
 BASHPROFILE
 chmod 644 "${ISO_ROOT}/airootfs/root/.bash_profile"
+
+# =============================================================================
+# SECTION 8d — invariant-splash.service + symlink
+# =============================================================================
+cat > "${ISO_ROOT}/airootfs/etc/systemd/system/invariant-splash.service" << 'SERVICE'
+[Unit]
+Description=INVARIANT Boot Splash
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
+ConditionPathExists=/root/splash.sh
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /root/splash.sh
+StandardOutput=tty
+TTYPath=/dev/tty1
+TTYReset=no
+TTYVHangup=no
+Restart=no
+KillSignal=SIGTERM
+TimeoutStopSec=1
+
+[Install]
+WantedBy=sysinit.target
+SERVICE
+
+mkdir -p "${ISO_ROOT}/airootfs/etc/systemd/system/sysinit.target.wants"
+ln -sf /etc/systemd/system/invariant-splash.service \
+    "${ISO_ROOT}/airootfs/etc/systemd/system/sysinit.target.wants/invariant-splash.service"
 
 # ════════════════════════════════════════════════════════════
 # SECTION 9 — Silent boot suppression (FIX-15)
@@ -964,5 +1088,26 @@ _INJECTED_PUBKEY="$(grep '^_EMBEDDED_PUBKEY_HEX: str = ' "${VERIFIER_FILE}" \
     "_EMBEDDED_PUBKEY_HEX mismatch: injected='${_INJECTED_PUBKEY}' expected='${PRODUCTION_PUBKEY}'"
 [[ "${_INJECTED_PUBKEY}" != "0000000000000000000000000000000000000000000000000000000000000000" ]] || die \
     "_EMBEDDED_PUBKEY_HEX is still the sentinel value — forge.sh injection failed"
+
+# K: splash.sh present, executable, contains stop-file guard.
+readonly SPLASH_SCRIPT="${ISO_ROOT}/airootfs/root/splash.sh"
+[[ -f "${SPLASH_SCRIPT}" ]] || \
+    die "splash.sh missing: ${SPLASH_SCRIPT}"
+[[ -x "${SPLASH_SCRIPT}" ]] || \
+    die "splash.sh is not executable"
+grep -q 'stop_splash' "${SPLASH_SCRIPT}" || \
+    die "splash.sh does not contain stop_splash guard"
+
+# L: splash.sh declared in profiledef.sh file_permissions.
+grep -q '"/root/splash.sh"' "${PROFILEDEF_FILE}" || \
+    die "splash.sh not in profiledef.sh file_permissions — squashfs may drop execute bit"
+
+# M: splash handoff injected into menu.py.
+grep -q '# --- SPLASH HANDOFF ---' "${MENU_PY}" || \
+    die "Splash handoff sentinel not found in menu.py"
+
+# N: invariant-splash.service symlink present in sysinit.target.wants.
+[[ -L "${ISO_ROOT}/airootfs/etc/systemd/system/sysinit.target.wants/invariant-splash.service" ]] || \
+    die "invariant-splash.service symlink missing — sysinit.target.wants injection failed"
 
 printf 'ISO successfully generated\n'
