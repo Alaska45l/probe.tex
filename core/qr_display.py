@@ -108,7 +108,7 @@ def display_activation_screen(
     Parameters
     ----------
     challenge_url : str
-        Full URL to encode in the QR code (https://invariant-api.onrender.com/api/v1/license/activate?c=...)
+        Full URL to encode in the QR code (https://api.invariant.ar/api/v1/license/activate?c=...)
     boot_id : str
         16-char hex session ID for display (formatted as XXXX-XXXX)
     timeout_seconds : int

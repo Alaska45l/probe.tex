@@ -276,7 +276,7 @@ cat > "${ISO_ROOT}/profiledef.sh" << 'PROFILEDEF'
 iso_name="probe-tex"
 # iso_label: 9-char ISO 9660 Level 1; must match archisolabel= in all loaders.
 iso_label="PROBE_TEX"
-iso_publisher="INVARIANT SYSTEMS <https://invariant.systems>"
+iso_publisher="INVARIANT SYSTEMS <https://invariant.ar>"
 iso_application="probe.tex Hardware Forensic Diagnostic"
 iso_version="$(date +%Y.%m.%d)"
 install_dir="arch"
@@ -682,7 +682,7 @@ chmod +x "${ISO_ROOT}/airootfs/root/splash.sh"
 cat > "${ISO_ROOT}/airootfs/etc/systemd/system/invariant-probe.service" << 'SERVICE'
 [Unit]
 Description=INVARIANT Ring-0 Boot Menu
-Documentation=https://invariant-web.alaska45l.workers.dev/
+Documentation=https://invariant.ar/
 After=multi-user.target
 ConditionPathExists=/root/launcher.sh
 # Prevent infinite restart loops on persistent faults.

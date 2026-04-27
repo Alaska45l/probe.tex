@@ -116,7 +116,7 @@ _HWM_BAK_FILE: Path = _MOUNT_POINT / ".invariant_rtc_hwm.bak"
 _LICENSE_MAX_BYTES: int = 8_192  # 8 KiB
 
 # Air-Gap Bridge: activation URL base
-_ACTIVATION_URL_BASE: str = "https://invariant-api.onrender.com/api/v1/license/activate"
+_ACTIVATION_URL_BASE: str = "https://api.invariant.ar/api/v1/license/activate"
 
 # ════════════════════════════════════════════════════════════════════════════
 #  EXCEPTION
