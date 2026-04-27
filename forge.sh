@@ -676,48 +676,6 @@ echo -en "\r\e[2K\e[0m\e[2J\e[H\e[?25h"
 SPLASH
 chmod +x "${ISO_ROOT}/airootfs/root/splash.sh"
 
-# =============================================================================
-# SECTION 7 patch — menu.py preamble injection
-# =============================================================================
-MENU_PY="${ISO_ROOT}/airootfs/root/probe.tex/menu.py"
-[[ -f "${MENU_PY}" ]] || die "menu.py not found at ${MENU_PY}"
-
-if ! grep -q '# --- SPLASH HANDOFF ---' "${MENU_PY}"; then
-    python3 - "${MENU_PY}" << 'PYINJECT'
-import sys, pathlib
-
-path = pathlib.Path(sys.argv[1])
-lines = path.read_text().splitlines(keepends=True)
-
-handoff = (
-    "\n"
-    "# --- SPLASH HANDOFF ---\n"
-    "import pathlib as _pl, time as _time\n"
-    "_pl.Path('/tmp/stop_splash').touch()\n"
-    "_time.sleep(0.2)\n"
-    "import sys as _sys\n"
-    "_sys.stdout.write('\\033[?25h\\033[0m\\033[2J\\033[H')\n"
-    "_sys.stdout.flush()\n"
-    "# --- END SPLASH HANDOFF ---\n"
-    "\n"
-)
-
-insert_at = len(lines)
-for idx, line in enumerate(lines):
-    stripped = line.strip()
-    if stripped.startswith('#') or stripped == '':
-        continue
-    if stripped.startswith('import ') or stripped.startswith('from '):
-        continue
-    insert_at = idx
-    break
-
-lines.insert(insert_at, handoff)
-path.write_text(''.join(lines))
-print(f"Splash handoff injected at line {insert_at} of {path}")
-PYINJECT
-fi
-
 # ════════════════════════════════════════════════════════════
 # SECTION 8 — invariant-probe.service
 # ════════════════════════════════════════════════════════════
@@ -951,6 +909,48 @@ rsync -a --delete "${RSYNC_EXCLUDES[@]}" \
     "${REPO_ROOT}/" \
     "${ISO_ROOT}/airootfs/root/probe.tex/" \
     || die "rsync failed for probe.tex repository"
+
+# =============================================================================
+# SECTION 11b — menu.py preamble injection (must run after rsync)
+# =============================================================================
+MENU_PY="${ISO_ROOT}/airootfs/root/probe.tex/menu.py"
+[[ -f "${MENU_PY}" ]] || die "menu.py not found at ${MENU_PY}"
+
+if ! grep -q '# --- SPLASH HANDOFF ---' "${MENU_PY}"; then
+    python3 - "${MENU_PY}" << 'PYINJECT'
+import sys, pathlib
+
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text().splitlines(keepends=True)
+
+handoff = (
+    "\n"
+    "# --- SPLASH HANDOFF ---\n"
+    "import pathlib as _pl, time as _time\n"
+    "_pl.Path('/tmp/stop_splash').touch()\n"
+    "_time.sleep(0.2)\n"
+    "import sys as _sys\n"
+    "_sys.stdout.write('\\033[?25h\\033[0m\\033[2J\\033[H')\n"
+    "_sys.stdout.flush()\n"
+    "# --- END SPLASH HANDOFF ---\n"
+    "\n"
+)
+
+insert_at = len(lines)
+for idx, line in enumerate(lines):
+    stripped = line.strip()
+    if stripped.startswith('#') or stripped == '':
+        continue
+    if stripped.startswith('import ') or stripped.startswith('from '):
+        continue
+    insert_at = idx
+    break
+
+lines.insert(insert_at, handoff)
+path.write_text(''.join(lines))
+print(f"Splash handoff injected at line {insert_at} of {path}")
+PYINJECT
+fi
 
 # _ISO_BUILD_TIMESTAMP is intentionally non-deterministic: it binds
 # the license validity window to this exact build epoch (Time Trap).
