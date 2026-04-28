@@ -1,0 +1,8 @@
+# prob-tex/requirements.txt
+# Python dependencies for the INVARIANT live-OS diagnostic tool.
+# These are installed via pacman in the Arch Linux ISO environment;
+# this file documents exact versions for reproducibility.
+
+jinja2==3.1.6
+markupsafe==3.0.3
+rich==15.0.0
