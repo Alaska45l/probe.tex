@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="520" viewBox="0 0 1180 520" role="img" aria-labelledby="title desc">
+  <title id="title">probe.tex forensic diagnostic pipeline</title>
+  <desc id="desc">The live ISO verifies licensing, extracts hardware data, evaluates entropy, and renders an offline PDF report.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f7f2; }
+      .box { fill: #fff; stroke: #151515; stroke-width: 2; }
+      .core { fill: #151515; stroke: #151515; stroke-width: 2; }
+      .coreText { fill: #fff; }
+      .warn { fill: #c83f31; }
+      .line { stroke: #151515; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #151515; }
+      .h { font-size: 18px; font-weight: 700; }
+      .b { font-size: 13px; }
+      .s { font-size: 12px; fill: #595959; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#151515"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1180" height="520"/>
+  <rect class="box" x="45" y="60" width="250" height="105" rx="4"/>
+  <text class="h" x="75" y="98">Live ISO Boot</text>
+  <text class="b" x="75" y="126">Arch Linux payload</text>
+  <text class="s" x="75" y="148">No host OS dependency</text>
+  <rect class="box" x="45" y="220" width="250" height="105" rx="4"/>
+  <text class="h" x="75" y="258">License Gate</text>
+  <text class="b" x="75" y="286">Ed25519 verification</text>
+  <text class="s" x="75" y="308">Fail closed on mismatch</text>
+  <rect class="core" x="395" y="140" width="275" height="150" rx="4"/>
+  <text class="h coreText" x="425" y="182">main.py</text>
+  <text class="b coreText" x="425" y="212">Orchestrates extraction</text>
+  <text class="b coreText" x="425" y="238">Scores physical entropy</text>
+  <text class="b coreText" x="425" y="264">Renders report context</text>
+  <rect class="box" x="760" y="35" width="300" height="85" rx="4"/>
+  <text class="h" x="790" y="72">Extractors</text>
+  <text class="b" x="790" y="100">CPU, GPU, storage, RAM, USB</text>
+  <rect class="box" x="760" y="150" width="300" height="85" rx="4"/>
+  <text class="h" x="790" y="187">Entropy Engine</text>
+  <text class="b" x="790" y="215">Subsystem scores and actions</text>
+  <rect class="box" x="760" y="265" width="300" height="85" rx="4"/>
+  <text class="h" x="790" y="302">LaTeX Renderer</text>
+  <text class="b" x="790" y="330">Escaped Jinja2 -> Tectonic</text>
+  <rect class="box" x="760" y="380" width="300" height="85" rx="4"/>
+  <text class="h" x="790" y="417">Forensic PDF</text>
+  <text class="b" x="790" y="445">Evidence, hashes, badges</text>
+  <path class="line" d="M295 112 C345 118 360 165 395 190"/>
+  <path class="line" d="M295 272 C345 268 360 235 395 225"/>
+  <path class="line" d="M670 190 C710 132 720 84 760 78"/>
+  <path class="line" d="M670 215 H760"/>
+  <path class="line" d="M670 240 C710 265 720 300 760 308"/>
+  <path class="line" d="M910 350 V380"/>
+  <rect class="warn" x="45" y="455" width="14" height="14"/>
+  <text class="s" x="70" y="467">Air-gapped design: no runtime package downloads, no fabricated telemetry, no partial license success.</text>
+</svg>
